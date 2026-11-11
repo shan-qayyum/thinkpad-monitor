@@ -106,6 +106,32 @@ namespace ThinkPadMonitor
             });
         }
 
+        // Reads until two consecutive values agree within the tolerance, so a single garbled reply (possible when
+        // another program talks to the EC without taking the shared lock) is never reported.
+        public static int ReadStable(byte addr, int tolerance)
+        {
+            int a = Read(addr);
+            for (int i = 0; i < 3; i++)
+            {
+                int b = Read(addr);
+                if (Math.Abs(a - b) <= tolerance) return b;
+                a = b;
+            }
+            return a;
+        }
+
+        public static int Read16Stable(byte lowAddr, int tolerance)
+        {
+            int a = Read16(lowAddr);
+            for (int i = 0; i < 3; i++)
+            {
+                int b = Read16(lowAddr);
+                if (Math.Abs(a - b) <= tolerance) return b;
+                a = b;
+            }
+            return a;
+        }
+
         // Reads a 16-bit little-endian value from two bytes under one lock, so both halves come from the same moment.
         public static int Read16(byte lowAddr)
         {

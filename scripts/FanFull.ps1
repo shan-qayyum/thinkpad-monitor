@@ -107,11 +107,19 @@ switch ($Mode) {
     'auto'   { [ThinkPadEC]::Write($FAN_ADDR, $FAN_AUTO); 'Fan: automatic (firmware control)'; return }
 }
 
+# True while ThinkPad Monitor is controlling the fan itself (a fan mode other than "Leave alone", a kick-start
+# or a restart check). It holds this named object for exactly that long.
+function Test-AppOwnsFan {
+    [System.Threading.Mutex]$m = $null
+    if ([System.Threading.Mutex]::TryOpenExisting('Global\ThinkPadMonitor_FanControl', [ref]$m)) { $m.Dispose(); return $true }
+    return $false
+}
+
 # full: apply, then keep re-applying so the EC cannot drift back to automatic (e.g. after sleep/resume)
 do {
     try {
         $cur = [ThinkPadEC]::Read($FAN_ADDR)
-        if ($cur -ne $FAN_FULL) {
+        if ($cur -ne $FAN_FULL -and -not (Test-AppOwnsFan)) {
             [ThinkPadEC]::Write($FAN_ADDR, $FAN_FULL)
             'Fan: full speed (was 0x{0:X2})' -f $cur
         }

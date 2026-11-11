@@ -36,8 +36,9 @@ namespace ThinkPadMonitor
 
         public bool FanSpinning { get { return FanRpm > 0; } }
         public bool CpuAtMinimum { get { return CpuMhz > 0 && CpuMhz <= 1300; } }
-        // At minimum clock while busy = the firmware is holding the CPU down (PROCHOT), not idle power saving.
-        public bool FirmwareThrottled { get { return CpuAtMinimum && CpuLoad >= 60; } }
+        // At minimum clock while busy = something is holding the CPU down, not idle power saving. The caller
+        // decides whether that is the firmware (PROCHOT) or the user's own CPU limit.
+        public bool HeldAtMinimum { get { return CpuAtMinimum && CpuLoad >= 60; } }
 
         public string FanModeText
         {
@@ -73,14 +74,16 @@ namespace ThinkPadMonitor
             catch { return 0; }
         }
 
+        public int MaxMhz { get { return maxMhz; } }
+
         public Sample Take()
         {
             var s = new Sample { Time = DateTime.Now, CpuMaxMhz = maxMhz };
             try
             {
-                s.CpuTemp = EmbeddedController.Read(Ec.CPU_TEMP);
-                s.FanLevel = EmbeddedController.Read(Ec.FAN_LEVEL);
-                int rpm = EmbeddedController.Read16(Ec.FAN_RPM);
+                s.CpuTemp = EmbeddedController.ReadStable(Ec.CPU_TEMP, 2);
+                s.FanLevel = EmbeddedController.ReadStable(Ec.FAN_LEVEL, 0);
+                int rpm = EmbeddedController.Read16Stable(Ec.FAN_RPM, 300);
                 s.FanRpm = (rpm == 0 || rpm == 0xFFFF) ? -1 : rpm;
                 s.ThinkLightOn = (EmbeddedController.Read(Ec.THINKLIGHT) & Ec.THINKLIGHT_BIT) != 0;
                 s.EcOk = true;

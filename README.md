@@ -2,7 +2,8 @@
 
 A tiny Windows dashboard + tray app for older ThinkPads that talks **directly to the embedded controller (EC)**,
 so it shows what the laptop's firmware actually sees, including the things general-purpose monitors miss:
-a fan that has **stopped turning**, and a CPU the firmware has **clamped to minimum speed**.
+a fan that has **stopped turning**, and a CPU the firmware has **clamped to minimum speed**. It can also act
+on them: fan modes, a CPU speed limit, a thermal guard, emergency hibernate and a one-click fan restart.
 
 ![dashboard](docs/screenshot.png)
 
@@ -39,24 +40,64 @@ Requirements: 64-bit Windows 7-11 with .NET Framework 4.x (already part of Windo
 | **CPU load** | Total CPU usage across all cores. |
 | **Power** | Battery percentage and charging state, or "AC" when no battery is fitted. |
 | **ThinkLight** | Whether the ThinkLight (the LED above the screen) is on. |
+| **Session temperature** | Highest, lowest and average CPU temperature since the app started. |
+| **Fan this session** | Share of the session during which the fan was turning, and how many times it stalled. |
+
+When you set a CPU limit yourself, the CPU speed tile says "Limit N %" instead of blaming the firmware.
 
 ### The graph
-The last 5 minutes of CPU temperature (coloured line, left scale) and CPU clock (blue line, right scale).
-A **red strip** along the bottom marks the moments when the fan was not turning.
+The last 5 minutes of CPU temperature (coloured line, left scale), CPU clock (blue line, right scale) and fan
+RPM (grey line, 0-5000). A **red strip** along the bottom marks the moments when the fan was not turning.
+
+### Fan mode
+| Mode | What the app does |
+|---|---|
+| **Leave alone (monitor only)** | Default. The app never writes to the fan. |
+| **Automatic (firmware)** | Hands the fan to the laptop's own control. |
+| **Smart curve** | Level 1 below 56 °C, then levels 3, 5 and 7 at 56, 64 and 72 °C, and full speed from 80 °C. It steps down only once the CPU is 4 °C below a step, so the fan does not hunt. |
+| **Full speed** | The fastest the fan can go (faster than level 7). |
+| **Level 1-7** | A fixed speed. A fixed low level can overheat the laptop under load: pair it with the thermal guard. |
+
+The mode is re-applied every second while the app runs. When the app exits it hands the fan back to the
+firmware, so the fan is never left pinned at a manual level.
+
+### CPU limit
+Locks the CPU's top speed through the Windows power plan ("maximum processor state"): no limit, no Turbo Boost
+(99 %), 85, 70, 50 or 30 %. Lower limits mean less heat and less speed. The limit belongs to the power plan, so
+it stays in force after the app closes; set it back to "No limit" to undo it.
+
+### Protections
+- **Thermal guard**: when the CPU reaches the temperature you choose, or the fan has been stopped for
+  10 seconds, the app caps the CPU to 50 %. Once the fan is turning and the CPU has stayed 10 °C below the
+  threshold for 30 seconds, it puts your previous limit back. If the app is closed or crashes while the cap is
+  on, the previous limit is restored on exit or at the next start.
+- **Emergency hibernate**: if the CPU stays at or above the temperature you choose for 5 seconds, the laptop
+  hibernates. Open programs are saved to disk and the machine powers off before it can cook.
+
+Both are off until you tick them.
 
 ### Buttons
 - **Toggle ThinkLight**: switches the ThinkLight on or off. No Fn key needed.
-- **Kick-start fan**: for a sticky fan. It cuts the fan's power and restores it in several patterns
-  (about a minute in total), watching the tachometer, and stops as soon as the fan turns. The fan is always
-  left at full speed afterwards. This can free a fan that is only sticky; it cannot fix a fully seized bearing.
+- **Restart fan (hibernate)**: for a fan the firmware has given up on. It hibernates the laptop and a timer
+  powers it back on about 75 seconds later. During that cold start the firmware drives the fan regardless of
+  its state, which is often enough to get a sticky fan turning again; the app then holds it at full speed and
+  reports whether it kept turning. Open programs are kept, but save your work first. Needs hibernate to be
+  enabled (`powercfg /hibernate on`) and a machine that can wake from hibernate by timer.
+- **Kick-start (experimental)**: cuts the fan's power and restores it in several patterns (about a minute),
+  watching the tachometer. On the X230 this was written for, it has **never** been seen to start a stalled fan:
+  the EC appears to stop driving a fan it considers failed. It is kept for testing on other models.
+- **Open log folder**: opens `Documents\ThinkPadMonitor`, where **Log readings to CSV** writes one line every
+  5 seconds (one file per day).
 - **Always on top**: keeps the window above other windows.
 - **Start with Windows**: starts the app minimized to the tray when you log in.
+
+Settings are saved in `%AppData%\ThinkPadMonitor\settings.ini`.
 
 ### Tray icon
 - The icon shows the **CPU temperature as a number**, coloured like the temperature tile. Its background turns
   **red when the fan is stopped**.
 - Hover over it for temperature, fan, clock and load. Left-click to open the dashboard. Right-click for
-  ThinkLight, Kick-start and **Exit**.
+  ThinkLight, fan mode, CPU limit, Restart fan and **Exit**.
 - Closing the window with **X** only hides it to the tray. Use **Exit** in the tray menu to quit.
 - You get a pop-up notification when the fan stops or the CPU passes 90 °C.
 
@@ -100,6 +141,13 @@ write to the EC, and please report the model in an issue.
 **The fan shows STOPPED but I can hear it running.**
 Some fans have no working tachometer signal. Please report it in an issue together with your model.
 
+**Restart fan: the laptop hibernated but did not come back by itself.**
+Press the power button; nothing is lost. Timer wake from hibernate is not supported on every machine, and
+some firmware setups have it switched off.
+
+**The CPU is slow after I closed the app.**
+A CPU limit you picked stays in the Windows power plan. Open the app and choose "No limit (100 %)".
+
 **Another fan tool (e.g. TPFanControl) is running.**
 They can run side by side: both use the shared `Global\Access_EC` lock, so their commands never collide.
 But if both try to control the fan, the last one to write wins.
@@ -107,7 +155,8 @@ But if both try to control the fan, the last one to write wins.
 ## Uninstall
 1. Right-click the tray icon → **Exit**. Untick **Start with Windows** first if you enabled it, or delete the
    `ThinkPadMonitor` value under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
-2. Delete the app folder.
+2. Delete the app folder, and `%AppData%\ThinkPadMonitor` (settings) and `Documents\ThinkPadMonitor` (logs)
+   if you want those gone too.
 3. To remove the InpOut driver as well, run in an **admin** command prompt:
    ```
    sc stop inpoutx64
@@ -129,14 +178,18 @@ Source layout:
 | `src/EmbeddedController.cs` | EC read/write over ports 0x62/0x66, with the shared `Global\Access_EC` lock |
 | `src/Sampler.cs` | EC register map and one snapshot of every metric |
 | `src/PdhCounter.cs` | CPU clock and load via the Windows PDH API |
-| `src/FanKicker.cs` | The fan kick-start sequence |
-| `src/MainForm.cs` | Dashboard window, graph, tray icon and alerts |
+| `src/FanController.cs` | Fan modes and the smart curve |
+| `src/FanKicker.cs` | The experimental fan kick-start sequence |
+| `src/PowerPlan.cs` | CPU limit, hibernate and the wake timer |
+| `src/Settings.cs` | Saved settings |
+| `src/MainForm.cs` | Dashboard window, graph, tray icon, alerts and protections |
 
 ## Extra scripts
 PowerShell tools in `scripts/`. Put them next to `inpoutx64.dll` to use them.
 - `ThinkLight.ps1 [toggle|on|off|status]`, plus `ThinkLight.vbs` (silent launcher for a hotkey shortcut).
-- `FanFull.ps1`: keeps the fan at full speed, re-applied every 5 s. `-Mode auto` hands the fan back to the
-  firmware, `-Mode status` prints the fan register.
+- `FanFull.ps1`: keeps the fan at full speed, re-applied every 5 s, and stands back while the app is
+  controlling the fan itself. `-Mode auto` hands the fan back to the firmware, `-Mode status` prints the fan
+  register.
 - `Install-FanTask.ps1`: registers `FanFull.ps1` as a SYSTEM task at boot, plus a resume-from-sleep trigger
   (run as admin).
 - `FanKick.ps1` / `FanKick.vbs`: the kick-start sequence as a standalone script.

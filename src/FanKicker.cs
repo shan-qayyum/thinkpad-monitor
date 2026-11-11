@@ -26,7 +26,7 @@ namespace ThinkPadMonitor
 
         static bool Spinning()
         {
-            int r = EmbeddedController.Read16(Ec.FAN_RPM);
+            int r = EmbeddedController.Read16Stable(Ec.FAN_RPM, 300);
             return r > 0 && r < 0xFFFF;
         }
 
