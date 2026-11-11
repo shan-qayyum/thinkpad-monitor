@@ -16,6 +16,14 @@ namespace ThinkPadMonitor
         public const byte THINKLIGHT_BIT = 0x02;
 
         public const byte FAN_OFF = 0x00, FAN_FULL = 0x40, FAN_AUTO = 0x80;
+
+        // Inputs of the firmware's CPU speed limit (ACPI _PPC -> EC.LPMD and the TSL0 check in the Cpu0Ist SSDT).
+        public const byte POWER_FLAGS = 0x34;      // bit 7 = HPLO: charger power-limit flag
+        public const byte CHARGER_WATTS = 0xC9;    // HWAT: rated watts of the connected charger
+        public const byte THERMAL_FLAGS = 0x88;    // TSL0: bits 0-6, non-zero = thermal limit requested
+        public const byte AC_FLAGS = 0x46;         // bit 4 = HPAC: running on the charger
+        public const byte BATTERY0 = 0x38;         // bit 7 = HB0A: main battery attached, bits 0-2 = charge level
+        public const byte BATTERY1 = 0x39;         // bit 7 = HB1A: second battery attached
     }
 
     public class Sample
@@ -33,6 +41,27 @@ namespace ThinkPadMonitor
         public bool OnAc;
         public int BatteryPercent;   // -1 when no battery
         public string BatteryState;
+
+        public int ChargerWatts;     // 0 when not on the charger or unknown
+        public bool ChargerLimit;    // HPLO
+        public int ThermalFlags;     // TSL0
+        public bool EcOnAc;
+        public bool BatteryUsable;   // a battery is attached and not nearly empty
+
+        // Why the firmware is (or would be) holding the CPU at its low-power speed, or null if no rule applies.
+        // Mirrors the conditions in the X230's _PPC method.
+        public string FirmwareLimitReason
+        {
+            get
+            {
+                if (!EcOk) return null;
+                if (ThermalFlags != 0) return "thermal limit";
+                if (EcOnAc && ChargerLimit) return "charger power limit";
+                if (EcOnAc && ChargerWatts > 0 && ChargerWatts < 90 && !BatteryUsable)
+                    return ChargerWatts + " W charger, no battery";
+                return null;
+            }
+        }
 
         public bool FanSpinning { get { return FanRpm > 0; } }
         public bool CpuAtMinimum { get { return CpuMhz > 0 && CpuMhz <= 1300; } }
@@ -76,6 +105,12 @@ namespace ThinkPadMonitor
 
         public int MaxMhz { get { return maxMhz; } }
 
+        // The firmware counts a battery only if it is attached, not flagged critical, and above its lowest levels.
+        static bool Usable(int status)
+        {
+            return (status & 0x80) != 0 && (status & 0x10) == 0 && (status & 0x07) >= 2;
+        }
+
         public Sample Take()
         {
             var s = new Sample { Time = DateTime.Now, CpuMaxMhz = maxMhz };
@@ -86,6 +121,12 @@ namespace ThinkPadMonitor
                 int rpm = EmbeddedController.Read16Stable(Ec.FAN_RPM, 300);
                 s.FanRpm = (rpm == 0 || rpm == 0xFFFF) ? -1 : rpm;
                 s.ThinkLightOn = (EmbeddedController.Read(Ec.THINKLIGHT) & Ec.THINKLIGHT_BIT) != 0;
+                s.EcOnAc = (EmbeddedController.ReadStable(Ec.AC_FLAGS, 0) & 0x10) != 0;
+                s.ChargerLimit = (EmbeddedController.ReadStable(Ec.POWER_FLAGS, 0) & 0x80) != 0;
+                s.ChargerWatts = s.EcOnAc ? EmbeddedController.ReadStable(Ec.CHARGER_WATTS, 0) : 0;
+                s.ThermalFlags = EmbeddedController.ReadStable(Ec.THERMAL_FLAGS, 0) & 0x7F;
+                s.BatteryUsable = Usable(EmbeddedController.ReadStable(Ec.BATTERY0, 0))
+                               || Usable(EmbeddedController.ReadStable(Ec.BATTERY1, 0));
                 s.EcOk = true;
             }
             catch (Exception ex) { s.EcError = ex.Message; }

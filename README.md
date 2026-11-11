@@ -45,6 +45,20 @@ Requirements: 64-bit Windows 7-11 with .NET Framework 4.x (already part of Windo
 
 When you set a CPU limit yourself, the CPU speed tile says "Limit N %" instead of blaming the firmware.
 
+### Why the firmware throttles
+The X230's firmware forces the CPU to its low-power speed (1200 MHz on an i5-3230M) under rules of its own, and
+Windows only reports "limited by system firmware" (event 37, Kernel-Processor-Power). The app reads the same
+EC flags the firmware's rule uses and names the cause in the CPU speed tile and the status line:
+
+| Shown as | Firmware condition |
+|---|---|
+| **thermal limit** | The EC's thermal flags (`TSL0`) are set: something is too hot, typically because the fan is not moving air. |
+| **charger power limit** | The EC's charger flag (`HPLO`) is set while on AC. |
+| **N W charger, no battery** | The charger is rated under 90 W and no battery (or only a nearly empty one) is attached, so the firmware will not risk peak load on the charger alone. |
+
+The fix is physical in every case: cooling, a 90 W charger, or a battery. These CPUs cannot be overclocked
+(locked multiplier), so the top speed is the stock turbo speed with no limit active.
+
 ### The graph
 The last 5 minutes of CPU temperature (coloured line, left scale), CPU clock (blue line, right scale) and fan
 RPM (grey line, 0-5000). A **red strip** along the bottom marks the moments when the fan was not turning.
@@ -208,6 +222,13 @@ definitions name each bit:
 | `HFSP` | `0x2F` | Fan control: bits 0-2 level, `0x40` full speed, `0x80` automatic |
 | `HSPD` | `0x84`-`0x85` | Fan tachometer, RPM (16-bit), `0xFFFF` = not turning |
 | `KBLT` | `0x3B` bit 1 | ThinkLight |
+| `HPLO` | `0x34` bit 7 | Charger power-limit flag |
+| `HWAT` | `0xC9` | Rated watts of the connected charger |
+| `TSL0` | `0x88` bits 0-6 | Thermal limit flags |
+| `HPAC` | `0x46` bit 4 | Running on the charger |
+| `HB0A` / `HB1A` | `0x38` / `0x39` bit 7 | Battery attached |
+
+The throttle rule itself is the `_PPC` method in the `Cpu0Ist` SSDT, which calls `EC.LPMD`.
 
 CPU clock and load come from Windows performance counters via PDH, which keeps working even on machines where
 the .NET counter API is broken.

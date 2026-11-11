@@ -412,7 +412,8 @@ namespace ThinkPadMonitor
             {
                 bool cappedLow = cpuLimit * s.CpuMaxMhz / 100 <= 1400;     // our own limit explains a low clock
                 bool throttled = s.HeldAtMinimum && !cappedLow;
-                string d = throttled ? "THROTTLED by firmware"
+                string why = s.FirmwareLimitReason;
+                string d = throttled ? (why != null ? "THROTTLED: " + why : "THROTTLED by firmware")
                          : guardActive ? "Capped by thermal guard"
                          : cpuLimit < 100 ? "Limit " + cpuLimit + " %"
                          : s.CpuAtMinimum ? "Minimum clock" : "of " + s.CpuMaxMhz + " MHz max";
@@ -422,12 +423,14 @@ namespace ThinkPadMonitor
 
             tLoad.Set(s.CpuLoad + " %", s.CpuLoad >= 85 ? Theme.Warn : Theme.Text, Environment.ProcessorCount + " logical CPUs");
             tPower.Set(s.BatteryPercent >= 0 ? s.BatteryPercent + " %" : (s.OnAc ? "AC" : "?"),
-                s.BatteryPercent >= 0 && s.BatteryPercent < 20 && !s.OnAc ? Theme.Bad : Theme.Text, s.BatteryState);
+                s.BatteryPercent >= 0 && s.BatteryPercent < 20 && !s.OnAc ? Theme.Bad : Theme.Text,
+                s.EcOk && s.ChargerWatts > 0 ? s.ChargerWatts + " W charger  ·  " + s.BatteryState : s.BatteryState);
 
             if (!busy)
                 status.Text = !s.EcOk ? "EC read failed: " + s.EcError
                     : "Updated " + s.Time.ToString("HH:mm:ss")
                       + (guardActive ? "   •   Thermal guard is capping the CPU." : "")
+                      + (s.FirmwareLimitReason != null ? "   •   Firmware is limiting CPU speed: " + s.FirmwareLimitReason + "." : "")
                       + (s.FanSpinning ? "" : "   •   Fan not turning: try Restart fan, keep the load light.");
 
             UpdateTray(s);
@@ -556,10 +559,11 @@ namespace ThinkPadMonitor
                 Directory.CreateDirectory(Settings.LogFolder);
                 string path = Path.Combine(Settings.LogFolder, s.Time.ToString("yyyy-MM-dd") + ".csv");
                 if (!File.Exists(path))
-                    File.WriteAllText(path, "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,cpu_limit_pct,on_ac,battery_pct\r\n");
-                File.AppendAllText(path, string.Format(CultureInfo.InvariantCulture, "{0:HH:mm:ss},{1},{2},0x{3:X2},{4},{5},{6},{7},{8}\r\n",
+                    File.WriteAllText(path, "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,cpu_limit_pct,on_ac,battery_pct,charger_w,charger_limit_flag,thermal_flags,firmware_limit_reason\r\n");
+                File.AppendAllText(path, string.Format(CultureInfo.InvariantCulture, "{0:HH:mm:ss},{1},{2},0x{3:X2},{4},{5},{6},{7},{8},{9},{10},0x{11:X2},{12}\r\n",
                     s.Time, s.EcOk ? s.CpuTemp.ToString() : "", s.EcOk ? Math.Max(0, s.FanRpm).ToString() : "", s.FanLevel,
-                    s.CpuMhz, s.CpuLoad, cpuLimit, s.OnAc ? 1 : 0, s.BatteryPercent));
+                    s.CpuMhz, s.CpuLoad, cpuLimit, s.OnAc ? 1 : 0, s.BatteryPercent,
+                    s.ChargerWatts, s.ChargerLimit ? 1 : 0, s.ThermalFlags, s.FirmwareLimitReason));
             }
             catch (IOException) { }                 // file open in a spreadsheet: skip this line
             catch (UnauthorizedAccessException) { }
