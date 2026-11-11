@@ -150,6 +150,7 @@ namespace ThinkPadMonitor
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
         const int RestartWakeSeconds = 75;     // long enough for the hibernate image to be written first
+        const int UnlockWakeSeconds = 25;      // sleep itself takes 10-15 s to enter
 
         static readonly Choice[] FanModes =
         {
@@ -173,7 +174,8 @@ namespace ThinkPadMonitor
         readonly CheckBox cGuard = new CheckBox(), cEmergency = new CheckBox(), cLog = new CheckBox(),
                           cTop = new CheckBox(), cStartup = new CheckBox();
         readonly NumericUpDown nGuard = new NumericUpDown(), nEmergency = new NumericUpDown();
-        readonly Button bLight = new Button(), bRestart = new Button(), bKick = new Button(), bLogs = new Button();
+        readonly Button bLight = new Button(), bRestart = new Button(), bKick = new Button(), bLogs = new Button(),
+                        bUnlock = new Button();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("Fan mode"), cpuMenu = new ToolStripMenuItem("CPU limit");
         readonly System.Windows.Forms.Timer awakeTimer = new System.Windows.Forms.Timer();
@@ -181,9 +183,12 @@ namespace ThinkPadMonitor
         WakeTimer wakeTimer;
         IntPtr trayIconHandle = IntPtr.Zero;
         int sampling;
-        bool loading = true, exiting, busy, restartPending;
-        bool wasSpinning = true, hotAlerted, guardActive;
-        int cpuLimit = 100, stallSecs, calmSecs, criticalSecs, ticks;
+        bool loading = true, exiting, busy, restartPending, unlockPending;
+        bool wasSpinning = true, hotAlerted, guardActive, lockAlerted;
+        int cpuLimit = 100, stallSecs, calmSecs, criticalSecs, ticks, lockSecs;
+        bool firmwareLocked;                   // held at minimum clock by the firmware for 10 s or more
+        string lastTrigger;                   // most recent firmware limit condition seen, e.g. "charger power limit"
+        DateTime lastTriggerTime, holdStatusUntil;
 
         // Session statistics
         int statSamples, statMin = int.MaxValue, statMax = int.MinValue, statStalls, statSpinning;
@@ -229,10 +234,11 @@ namespace ThinkPadMonitor
             StyleCheck(cLog, "Log readings to CSV", 560, 482, 150);
 
             // Row 4: actions
-            StyleButton(bLight, "Toggle ThinkLight", 12, 514, 170);
-            StyleButton(bRestart, "Restart fan (hibernate)", 190, 514, 190);
-            StyleButton(bKick, "Kick-start (experimental)", 388, 514, 190);
-            StyleButton(bLogs, "Open log folder", 586, 514, 158);
+            StyleButton(bLight, "ThinkLight", 12, 514, 110);
+            StyleButton(bUnlock, "Unlock CPU speed", 130, 514, 160);
+            StyleButton(bRestart, "Restart fan", 298, 514, 130);
+            StyleButton(bKick, "Kick-start (experimental)", 436, 514, 188);
+            StyleButton(bLogs, "Open logs", 632, 514, 112);
 
             // Row 5: window options
             StyleCheck(cTop, "Always on top", 12, 560, 130);
@@ -270,6 +276,7 @@ namespace ThinkPadMonitor
             cStartup.CheckedChanged += delegate { if (!loading) SetStartup(cStartup.Checked); };
             bLight.Click += delegate { ToggleThinkLight(); };
             bRestart.Click += delegate { RestartFan(); };
+            bUnlock.Click += delegate { UnlockCpu(); };
             bKick.Click += delegate { KickFan(); };
             bLogs.Click += delegate { Directory.CreateDirectory(Settings.LogFolder); Process.Start(Settings.LogFolder); };
 
@@ -349,6 +356,7 @@ namespace ThinkPadMonitor
             }
             menu.Items.Add(fanMenu);
             menu.Items.Add(cpuMenu);
+            menu.Items.Add("Unlock CPU speed (short sleep)", null, delegate { ShowDashboard(); UnlockCpu(); });
             menu.Items.Add("Restart fan (hibernate)", null, delegate { ShowDashboard(); RestartFan(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
@@ -413,7 +421,19 @@ namespace ThinkPadMonitor
                 bool cappedLow = cpuLimit * s.CpuMaxMhz / 100 <= 1400;     // our own limit explains a low clock
                 bool throttled = s.HeldAtMinimum && !cappedLow;
                 string why = s.FirmwareLimitReason;
-                string d = throttled ? (why != null ? "THROTTLED: " + why : "THROTTLED by firmware")
+                if (why != null) { lastTrigger = why; lastTriggerTime = s.Time; }
+                // The firmware's conditions often clear within a second while Windows keeps the limit it was
+                // handed, so a lock with no active condition is reported as latched.
+                lockSecs = throttled ? lockSecs + 1 : 0;
+                firmwareLocked = lockSecs >= 10;
+                if (firmwareLocked && !lockAlerted)
+                {
+                    lockAlerted = true;
+                    tray.ShowBalloonTip(6000, "CPU locked at minimum speed", "The firmware is holding the CPU at " + s.CpuMhz +
+                        " MHz" + TriggerText() + ". Use \"Unlock CPU speed\" to clear it.", ToolTipIcon.Warning);
+                }
+                else if (!throttled) lockAlerted = false;
+                string d = throttled ? (why != null ? "THROTTLED: " + why : "THROTTLED: firmware lock")
                          : guardActive ? "Capped by thermal guard"
                          : cpuLimit < 100 ? "Limit " + cpuLimit + " %"
                          : s.CpuAtMinimum ? "Minimum clock" : "of " + s.CpuMaxMhz + " MHz max";
@@ -426,11 +446,12 @@ namespace ThinkPadMonitor
                 s.BatteryPercent >= 0 && s.BatteryPercent < 20 && !s.OnAc ? Theme.Bad : Theme.Text,
                 s.EcOk && s.ChargerWatts > 0 ? s.ChargerWatts + " W charger  ·  " + s.BatteryState : s.BatteryState);
 
-            if (!busy)
-                status.Text = !s.EcOk ? "EC read failed: " + s.EcError
+            if (!busy && s.Time >= holdStatusUntil)
+                status.Text =!s.EcOk ? "EC read failed: " + s.EcError
                     : "Updated " + s.Time.ToString("HH:mm:ss")
                       + (guardActive ? "   •   Thermal guard is capping the CPU." : "")
-                      + (s.FirmwareLimitReason != null ? "   •   Firmware is limiting CPU speed: " + s.FirmwareLimitReason + "." : "")
+                      + (firmwareLocked ? "   •   Firmware lock on CPU speed" + TriggerText() + ": use Unlock CPU speed."
+                         : s.FirmwareLimitReason != null ? "   •   Firmware limit condition: " + s.FirmwareLimitReason + "." : "")
                       + (s.FanSpinning ? "" : "   •   Fan not turning: try Restart fan, keep the load light.");
 
             UpdateTray(s);
@@ -584,7 +605,7 @@ namespace ThinkPadMonitor
         void SetBusy(bool on)
         {
             busy = on;
-            bKick.Enabled = bRestart.Enabled = !on;
+            bKick.Enabled = bRestart.Enabled = bUnlock.Enabled = !on;
             FanController.Suspended = on;
             if (on) FanController.SignalOwner(true);   // keeps a background fan service out of the way
         }
@@ -600,6 +621,7 @@ namespace ThinkPadMonitor
                 {
                     SetBusy(false);
                     status.Text = result;
+                    holdStatusUntil = DateTime.Now.AddSeconds(20);   // keep the result readable
                     tray.ShowBalloonTip(4000, balloonTitle, result, ToolTipIcon.Info);
                 }));
             });
@@ -654,19 +676,87 @@ namespace ThinkPadMonitor
             th.Start();
         }
 
+        string TriggerText()
+        {
+            return lastTrigger == null ? "" : " (last trigger: " + lastTrigger + " at " + lastTriggerTime.ToString("HH:mm:ss") + ")";
+        }
+
+        // Windows keeps the firmware's speed limit until the firmware tells it to look again, which on this
+        // hardware often never happens. Resuming from sleep makes Windows re-read the limit, so a short sleep
+        // with a wake timer clears a lock whose cause has already gone.
+        void UnlockCpu()
+        {
+            if (busy) return;
+            DialogResult answer = MessageBox.Show(this,
+                "This puts the laptop to sleep and wakes it by itself about " + UnlockWakeSeconds + " seconds later.\n\n" +
+                "Waking from sleep makes Windows re-read the firmware's CPU speed limit, which clears a lock whose cause " +
+                "has already gone. Your open programs are kept.\n\nIf the laptop has not come back after 3 minutes, press the power button.\n\nSleep now?",
+                "Unlock CPU speed", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+            if (answer == DialogResult.Yes) StartUnlock();
+        }
+
+        void StartUnlock()
+        {
+            PowerPlan.EnableWakeTimers();
+            if (wakeTimer != null) wakeTimer.Dispose();
+            wakeTimer = new WakeTimer();
+            if (!wakeTimer.Arm(UnlockWakeSeconds))
+            {
+                wakeTimer.Dispose(); wakeTimer = null;
+                status.Text = "This PC cannot wake itself from sleep, so the unlock was cancelled.";
+                return;
+            }
+            unlockPending = true;
+            status.Text = "Sleeping... the laptop will wake by itself.";
+            var th = new Thread(delegate()
+            {
+                Thread.Sleep(800);
+                if (PowerPlan.Sleep()) return;
+                BeginInvoke(new Action(delegate
+                {
+                    unlockPending = false;
+                    wakeTimer.Dispose(); wakeTimer = null;
+                    status.Text = "Windows refused to sleep. Unlock cancelled.";
+                }));
+            });
+            th.IsBackground = true;
+            th.Start();
+        }
+
+        // Loads two cores for a few seconds and reports the clock Windows now allows.
+        static string CheckCpuAfterUnlock(Action<string> progress)
+        {
+            progress("Back from sleep - checking the CPU speed...");
+            Thread.Sleep(4000);                    // let the resume settle
+            bool stop = false;
+            ThreadStart spin = delegate { double x = 1; while (!Volatile.Read(ref stop)) x = x * 1.0000001 + 0.5; };
+            for (int i = 0; i < 2; i++) { var t = new Thread(spin); t.IsBackground = true; t.Start(); }
+            int mhz = 0;
+            using (PdhCounter freq = PdhCounter.Open(@"\Processor Information(_Total)\Processor Frequency"))
+            {
+                for (int i = 0; i < 4; i++) { Thread.Sleep(1000); if (freq != null) mhz = Math.Max(mhz, (int)freq.Next()); }
+            }
+            Volatile.Write(ref stop, true);
+            if (mhz <= 0) return "Back from sleep, but the CPU speed could not be read.";
+            return mhz > 1300 ? "CPU unlocked: " + mhz + " MHz under load."
+                              : "Still locked at " + mhz + " MHz. The firmware's limit condition is probably still active.";
+        }
+
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             if (e.Mode != PowerModes.Resume || IsDisposed) return;
             BeginInvoke(new Action(delegate
             {
                 criticalSecs = 0;
-                if (!restartPending) return;
-                restartPending = false;
+                if (!restartPending && !unlockPending) return;
+                bool fanRestart = restartPending;
+                restartPending = unlockPending = false;
                 if (wakeTimer != null) { wakeTimer.Dispose(); wakeTimer = null; }
                 PowerPlan.KeepAwake(true);        // a timer wake goes back to sleep unless told otherwise
                 awakeTimer.Start();
                 ShowDashboard();
-                RunFanJob(CheckFanAfterRestart, "Fan restart");
+                if (fanRestart) RunFanJob(CheckFanAfterRestart, "Fan restart");
+                else RunFanJob(CheckCpuAfterUnlock, "Unlock CPU speed");
             }));
         }
 

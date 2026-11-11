@@ -56,7 +56,13 @@ EC flags the firmware's rule uses and names the cause in the CPU speed tile and 
 | **charger power limit** | The EC's charger flag (`HPLO`) is set while on AC. |
 | **N W charger, no battery** | The charger is rated under 90 W and no battery (or only a nearly empty one) is attached, so the firmware will not risk peak load on the charger alone. |
 
-The fix is physical in every case: cooling, a 90 W charger, or a battery. These CPUs cannot be overclocked
+These conditions often last under a second, but the lock stays: Windows keeps the limit it was handed until
+the firmware tells it to look again. The tile then says "THROTTLED: firmware lock" and the status line names
+the last trigger seen and when. **Unlock CPU speed** clears such a lock (see Buttons). If the condition comes
+straight back, so does the lock; on the test X230 (90 W charger, no battery, failing fan) the charger flag
+re-fired within seconds of every unlock.
+
+The lasting fix is physical in every case: cooling, a 90 W charger, or a battery. These CPUs cannot be overclocked
 (locked multiplier), so the top speed is the stock turbo speed with no limit active.
 
 ### The graph
@@ -92,7 +98,11 @@ Both are off until you tick them.
 
 ### Buttons
 - **Toggle ThinkLight**: switches the ThinkLight on or off. No Fn key needed.
-- **Restart fan (hibernate)**: for a fan the firmware has given up on. It hibernates the laptop and a timer
+- **Unlock CPU speed**: sleeps the laptop and wakes it by timer about 25 seconds later. Waking makes Windows
+  re-read the firmware's speed limit, which clears a lock whose cause has gone. The app then loads the CPU for
+  a few seconds and reports the clock it reached. It does not override the firmware: if the limit condition is
+  still there, the lock returns.
+- **Restart fan**: for a fan the firmware has given up on. It hibernates the laptop and a timer
   powers it back on about 75 seconds later. During that cold start the firmware drives the fan regardless of
   its state, which is often enough to get a sticky fan turning again; the app then holds it at full speed and
   reports whether it kept turning. Open programs are kept, but save your work first. Needs hibernate to be
