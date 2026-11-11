@@ -66,9 +66,6 @@ namespace ThinkPadMonitor
         // Blocks until the machine is running again. False if Windows refused.
         public static bool Hibernate() { return SetSuspendState(true, false, false); }
 
-        // Sleep (S3). Blocks until the machine is running again. False if Windows refused.
-        public static bool Sleep() { return SetSuspendState(false, false, false); }
-
         // After a timer wake Windows goes back to sleep within minutes unless something asks it to stay up.
         public static void KeepAwake(bool on)
         {
