@@ -231,7 +231,7 @@ namespace ThinkPadMonitor
                     s.CpuTemp >= 90 ? "Hot - Intel limit 105 °C" : "Intel limit 105 °C");
                 if (s.FanSpinning) tFan.Set(s.FanRpm + " rpm", Theme.Good, s.FanModeText);
                 else tFan.Set("STOPPED", Theme.Bad, "Commanded: " + s.FanModeText);
-                tLight.Set(s.ThinkLightOn ? "ON" : "OFF", s.ThinkLightOn ? Theme.Warn : Theme.Dim, "Ctrl+Alt+L shortcut too");
+                tLight.Set(s.ThinkLightOn ? "ON" : "OFF", s.ThinkLightOn ? Theme.Warn : Theme.Dim, "Toggle with the button below");
             }
             else
             {
