@@ -185,7 +185,7 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.1.0";
+        const string AppVersion = "1.2.0";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
@@ -209,8 +209,10 @@ namespace ThinkPadMonitor
         readonly Graph graph = new Graph();
         readonly Label status = new Label();
         readonly ComboBox cbFan = new ComboBox();
-        readonly CheckBox cEmergency = new CheckBox(), cLog = new CheckBox(), cTop = new CheckBox(), cStartup = new CheckBox();
-        readonly NumericUpDown nEmergency = new NumericUpDown();
+        readonly CheckBox cEmergency = new CheckBox(), cLog = new CheckBox(), cTop = new CheckBox(), cStartup = new CheckBox(),
+                          cAutoLock = new CheckBox();
+        readonly NumericUpDown nEmergency = new NumericUpDown(), nAutoLock = new NumericUpDown();
+        readonly IdleLock idleLock = new IdleLock();
         readonly Button bLight = new Button(), bRestart = new Button(), bKick = new Button(), bLogs = new Button();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("Fan mode");
@@ -236,7 +238,7 @@ namespace ThinkPadMonitor
             Font = new Font("Segoe UI", 9f);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
-            ClientSize = new Size(756, 616);
+            ClientSize = new Size(756, 648);
             StartPosition = FormStartPosition.CenterScreen;
 
             var tiles = new FlowLayoutPanel { Left = 6, Top = 6, Width = 748, Height = 218, BackColor = Theme.Back };
@@ -257,18 +259,23 @@ namespace ThinkPadMonitor
             StyleNumber(nEmergency, cEmergency.Right + 4, 462, 80, 104, Settings.EmergencyTemp);
             AddLabel("°C or more for 5 seconds", nEmergency.Right + 6, 466);
 
-            // Row 3: actions
+            // Row 3: auto-lock
+            StyleCheck(cAutoLock, "Lock the PC after", 12, 494);
+            StyleNumber(nAutoLock, cAutoLock.Right + 4, 492, 1, 120, Settings.AutoLockMinutes);
+            AddLabel("minutes without keyboard or mouse, even while a video plays", nAutoLock.Right + 6, 496);
+
+            // Row 4: actions
             int x = 12;
-            x = StyleButton(bLight, "ThinkLight", x, 498) + 8;
-            x = StyleButton(bRestart, "Restart fan (reboots)", x, 498) + 8;
-            x = StyleButton(bKick, "Kick-start fan (experimental)", x, 498) + 8;
-            StyleButton(bLogs, "Open log folder", x, 498);
+            x = StyleButton(bLight, "ThinkLight", x, 530) + 8;
+            x = StyleButton(bRestart, "Restart fan (reboots)", x, 530) + 8;
+            x = StyleButton(bKick, "Kick-start fan (experimental)", x, 530) + 8;
+            StyleButton(bLogs, "Open log folder", x, 530);
 
-            // Row 4: window options
-            StyleCheck(cTop, "Always on top", 12, 546);
-            StyleCheck(cStartup, "Start with Windows", cTop.Right + 16, 546);
+            // Row 5: window options
+            StyleCheck(cTop, "Always on top", 12, 578);
+            StyleCheck(cStartup, "Start with Windows", cTop.Right + 16, 578);
 
-            status.SetBounds(12, 574, 732, 38);
+            status.SetBounds(12, 606, 732, 38);
             status.ForeColor = Theme.Dim;
             Controls.Add(status);
             SetStatus("Starting...");
@@ -276,6 +283,7 @@ namespace ThinkPadMonitor
             // Initial values (no events while loading)
             cbFan.SelectedIndex = Math.Max(0, Array.FindIndex(FanModes, delegate(Choice c) { return c.Key == Settings.FanMode; }));
             cEmergency.Checked = Settings.EmergencyEnabled;
+            cAutoLock.Checked = Settings.AutoLockEnabled;
             cLog.Checked = Settings.LogCsv;
             cTop.Checked = TopMost = Settings.AlwaysOnTop;
             cStartup.Checked = StartupEnabled();
@@ -284,6 +292,8 @@ namespace ThinkPadMonitor
             cbFan.SelectedIndexChanged += delegate { if (!loading) { Settings.FanMode = ((Choice)cbFan.SelectedItem).Key; Settings.Save(); } };
             cEmergency.CheckedChanged += delegate { if (!loading) { Settings.EmergencyEnabled = cEmergency.Checked; Settings.Save(); } };
             nEmergency.ValueChanged += delegate { if (!loading) { Settings.EmergencyTemp = (int)nEmergency.Value; Settings.Save(); } };
+            cAutoLock.CheckedChanged += delegate { if (!loading) { Settings.AutoLockEnabled = cAutoLock.Checked; Settings.Save(); } };
+            nAutoLock.ValueChanged += delegate { if (!loading) { Settings.AutoLockMinutes = (int)nAutoLock.Value; Settings.Save(); } };
             cLog.CheckedChanged += delegate { if (!loading) { Settings.LogCsv = cLog.Checked; Settings.Save(); } };
             cTop.CheckedChanged += delegate { TopMost = cTop.Checked; if (!loading) { Settings.AlwaysOnTop = cTop.Checked; Settings.Save(); } };
             cStartup.CheckedChanged += delegate { if (!loading) SetStartup(cStartup.Checked); };
@@ -299,6 +309,7 @@ namespace ThinkPadMonitor
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(); };
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            SystemEvents.SessionSwitch += OnSessionSwitch;
             CheckPendingFanRestart();
 
             if (startHidden) { ShowInTaskbar = false; WindowState = FormWindowState.Minimized; Load += delegate { Hide(); ShowInTaskbar = true; WindowState = FormWindowState.Normal; }; }
@@ -462,6 +473,7 @@ namespace ThinkPadMonitor
             UpdateTray(s);
             Alerts(s);
             Emergency(s);
+            AutoLock();
             if (Settings.LogCsv && ticks % 5 == 0) LogCsv(s);
         }
 
@@ -657,6 +669,20 @@ namespace ThinkPadMonitor
             t.Start();
         }
 
+        void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+        {
+            if (e.Reason == SessionSwitchReason.SessionLock) idleLock.SessionLocked = true;
+            else if (e.Reason == SessionSwitchReason.SessionUnlock) idleLock.SessionLocked = false;
+        }
+
+        void AutoLock()
+        {
+            IdleLock.Step step = idleLock.Tick(Settings.AutoLockEnabled, Settings.AutoLockMinutes);
+            if (step == IdleLock.Step.Warn)
+                tray.ShowBalloonTip(IdleLock.WarningSeconds * 1000, "Locking in " + IdleLock.WarningSeconds + " seconds",
+                    "No keyboard or mouse use for a while. Move the mouse to stay unlocked.", ToolTipIcon.Info);
+        }
+
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             if (e.Mode == PowerModes.Resume && !IsDisposed) BeginInvoke(new Action(delegate { criticalSecs = 0; }));
@@ -707,6 +733,7 @@ namespace ThinkPadMonitor
                 return;
             }
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
             timer.Dispose();
             FanController.Suspended = true;
             FanController.Release(Settings.FanMode);   // never leave the fan pinned at a manual level after exit

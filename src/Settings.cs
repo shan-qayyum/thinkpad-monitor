@@ -11,6 +11,8 @@ namespace ThinkPadMonitor
         public static string FanMode = "none";      // none | auto | smart | full | 1..7
         public static bool EmergencyEnabled = false;
         public static int EmergencyTemp = 98;       // C
+        public static bool AutoLockEnabled = false;
+        public static int AutoLockMinutes = 10;
         public static bool LogCsv = false;
         public static bool AlwaysOnTop = false;
         public static long FanCheckAfter = 0;       // ticks of the "Restart fan" click; checked after the next boot
@@ -44,6 +46,8 @@ namespace ThinkPadMonitor
             FanMode = Str(map, "FanMode", FanMode);
             EmergencyEnabled = Bool(map, "EmergencyEnabled", EmergencyEnabled);
             EmergencyTemp = Int(map, "EmergencyTemp", EmergencyTemp, 80, 104);
+            AutoLockEnabled = Bool(map, "AutoLockEnabled", AutoLockEnabled);
+            AutoLockMinutes = Int(map, "AutoLockMinutes", AutoLockMinutes, 1, 120);
             LogCsv = Bool(map, "LogCsv", LogCsv);
             AlwaysOnTop = Bool(map, "AlwaysOnTop", AlwaysOnTop);
             string v; long l;
@@ -60,6 +64,8 @@ namespace ThinkPadMonitor
                     "FanMode=" + FanMode,
                     "EmergencyEnabled=" + EmergencyEnabled,
                     "EmergencyTemp=" + EmergencyTemp,
+                    "AutoLockEnabled=" + AutoLockEnabled,
+                    "AutoLockMinutes=" + AutoLockMinutes,
                     "LogCsv=" + LogCsv,
                     "AlwaysOnTop=" + AlwaysOnTop,
                     "FanCheckAfter=" + FanCheckAfter,
