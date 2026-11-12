@@ -185,7 +185,7 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.2.1";
+        const string AppVersion = "1.2.2";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
@@ -306,7 +306,12 @@ namespace ThinkPadMonitor
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             CheckPendingFanRestart();
 
-            if (startHidden) { ShowInTaskbar = false; WindowState = FormWindowState.Minimized; Load += delegate { Hide(); ShowInTaskbar = true; WindowState = FormWindowState.Normal; }; }
+            tray.DoubleClick += delegate { ShowDashboard(); };
+            // Started from "Start with Windows": stay in the tray. SetVisibleCore keeps the window from ever being
+            // shown until the user asks; the handle is created now so background updates can reach the window.
+            allowVisible = !startHidden;
+            if (startHidden) CreateHandle();
+            StartShowListener();
 
             if (!EmbeddedController.DriverAvailable())
                 SetStatus("InpOut driver not found - EC metrics unavailable. Run InstallDriver.exe once (see README).");
@@ -703,7 +708,52 @@ namespace ThinkPadMonitor
             catch (Exception ex) { return "Fan check failed: " + ex.Message; }
         }
 
-        void ShowDashboard() { Show(); WindowState = FormWindowState.Normal; Activate(); }
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+
+        bool allowVisible;
+
+        protected override void SetVisibleCore(bool value)
+        {
+            base.SetVisibleCore(allowVisible && value);
+        }
+
+        // Brings the dashboard up and to the front from any state: hidden in the tray, minimized, or behind other
+        // windows. Also used when the app is launched a second time.
+        void ShowDashboard()
+        {
+            if (IsDisposed) return;
+            allowVisible = true;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            BringToFront();
+            Activate();
+            if (!SetForegroundWindow(Handle))
+            {
+                // Windows refused focus (focus-stealing protection): at least put the window on top of the others.
+                bool top = TopMost;
+                TopMost = true;
+                TopMost = top;
+            }
+        }
+
+        // A second launch signals this event (see Program.Main) instead of starting another copy.
+        void StartShowListener()
+        {
+            EventWaitHandle showEvent = Program.ShowEvent;
+            if (showEvent == null) return;
+            var listener = new Thread(delegate()
+            {
+                while (true)
+                {
+                    showEvent.WaitOne();
+                    if (exiting || IsDisposed) return;
+                    try { BeginInvoke(new Action(ShowDashboard)); }
+                    catch (InvalidOperationException) { return; }
+                }
+            });
+            listener.IsBackground = true;
+            listener.Start();
+        }
 
         static bool StartupEnabled()
         {
@@ -738,17 +788,33 @@ namespace ThinkPadMonitor
 
     static class Program
     {
+        [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int processId);
+        const string ShowEventName = @"Local\ThinkPadMonitor_Show";
+
+        public static EventWaitHandle ShowEvent;
+
         [STAThread]
         static void Main(string[] args)
         {
             bool first;
             using (var single = new Mutex(true, @"Local\ThinkPadMonitor_SingleInstance", out first))
             {
-                if (!first) return;
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-                bool hidden = Array.IndexOf(args, "--tray") >= 0;
-                Application.Run(new MainForm(hidden));
+                if (!first)
+                {
+                    // Already running (often hidden in the tray): ask that copy to show its dashboard. This process
+                    // was just launched by the user, so it may pass the right to come to the front to the other one.
+                    AllowSetForegroundWindow(-1 /* ASFW_ANY */);
+                    try { using (var ev = EventWaitHandle.OpenExisting(ShowEventName)) ev.Set(); }
+                    catch (WaitHandleCannotBeOpenedException) { }
+                    return;
+                }
+                using (ShowEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName))
+                {
+                    Application.EnableVisualStyles();
+                    Application.SetCompatibleTextRenderingDefault(false);
+                    bool hidden = Array.IndexOf(args, "--tray") >= 0;
+                    Application.Run(new MainForm(hidden));
+                }
             }
         }
     }

@@ -112,6 +112,8 @@ Settings are saved in `%AppData%\ThinkPadMonitor\settings.ini`.
 - Hover over it for temperature, fan, clock and load. Left-click to open the dashboard. Right-click for
   ThinkLight, fan mode, Restart fan and **Exit**.
 - Closing the window with **X** only hides it to the tray. Use **Exit** in the tray menu to quit.
+- To bring the dashboard back, click the tray icon, or simply open ThinkPad Monitor again (from the desktop or
+  Start): the running copy comes to the front instead of a second one starting.
 - You get a pop-up notification when the fan stops or the CPU passes 90 °C (unless **Show notifications** is
   unticked).
 
