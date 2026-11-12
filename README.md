@@ -84,14 +84,6 @@ If the CPU stays at or above the temperature you choose (80-104 °C) for 5 secon
 programs are saved to disk and the machine powers off before it can cook. It stays off until you press the
 power button. Off until you tick it.
 
-### Lock the PC when you stop using it
-Locks the PC after the number of minutes you choose (1-120) with no keyboard, mouse or touchpad input, **even
-while a video is playing**. Windows' own idle lock never fires during video playback, because the player tells
-Windows the screen is in use; this counts only real input. Useful if you fall asleep watching something: the
-sound keeps playing behind the lock screen, and anyone who picks up the laptop gets the password screen.
-30 seconds before locking you get a notification; moving the mouse cancels it. Off until you tick it. It only
-protects anything if your Windows account has a password or PIN.
-
 ### Buttons
 - **ThinkLight**: switches the ThinkLight on or off. No Fn key needed.
 - **Restart fan (reboots)**: for a fan the firmware has stopped driving. It restarts Windows (open programs
