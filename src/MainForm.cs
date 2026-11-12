@@ -209,7 +209,8 @@ namespace ThinkPadMonitor
         readonly Graph graph = new Graph();
         readonly Label status = new Label();
         readonly ComboBox cbFan = new ComboBox();
-        readonly CheckBox cEmergency = new CheckBox(), cLog = new CheckBox(), cTop = new CheckBox(), cStartup = new CheckBox();
+        readonly CheckBox cEmergency = new CheckBox(), cLog = new CheckBox(), cTop = new CheckBox(), cStartup = new CheckBox(),
+                          cNotify = new CheckBox();
         readonly NumericUpDown nEmergency = new NumericUpDown();
         readonly Button bLight = new Button(), bRestart = new Button(), bKick = new Button(), bLogs = new Button();
         readonly NotifyIcon tray = new NotifyIcon();
@@ -267,6 +268,7 @@ namespace ThinkPadMonitor
             // Row 4: window options
             StyleCheck(cTop, "Always on top", 12, 546);
             StyleCheck(cStartup, "Start with Windows", cTop.Right + 16, 546);
+            StyleCheck(cNotify, "Show notifications", cStartup.Right + 16, 546);
 
             status.SetBounds(12, 574, 732, 38);
             status.ForeColor = Theme.Dim;
@@ -278,6 +280,7 @@ namespace ThinkPadMonitor
             cEmergency.Checked = Settings.EmergencyEnabled;
             cLog.Checked = Settings.LogCsv;
             cTop.Checked = TopMost = Settings.AlwaysOnTop;
+            cNotify.Checked = Settings.Notifications;
             cStartup.Checked = StartupEnabled();
             loading = false;
 
@@ -286,6 +289,7 @@ namespace ThinkPadMonitor
             nEmergency.ValueChanged += delegate { if (!loading) { Settings.EmergencyTemp = (int)nEmergency.Value; Settings.Save(); } };
             cLog.CheckedChanged += delegate { if (!loading) { Settings.LogCsv = cLog.Checked; Settings.Save(); } };
             cTop.CheckedChanged += delegate { TopMost = cTop.Checked; if (!loading) { Settings.AlwaysOnTop = cTop.Checked; Settings.Save(); } };
+            cNotify.CheckedChanged += delegate { if (!loading) { Settings.Notifications = cNotify.Checked; Settings.Save(); } };
             cStartup.CheckedChanged += delegate { if (!loading) SetStartup(cStartup.Checked); };
             bLight.Click += delegate { ToggleThinkLight(); };
             bRestart.Click += delegate { RestartFan(); };
@@ -438,7 +442,7 @@ namespace ThinkPadMonitor
                 if (locked && !lockAlerted)
                 {
                     lockAlerted = true;
-                    tray.ShowBalloonTip(6000, "CPU held at minimum speed",
+                    Notify(6000, "CPU held at minimum speed",
                         "The firmware is holding the CPU at " + s.CpuMhz + " MHz under load" + TriggerText() + ".", ToolTipIcon.Warning);
                 }
                 else if (!held) lockAlerted = false;
@@ -494,19 +498,25 @@ namespace ThinkPadMonitor
             tray.Text = t.Length > 63 ? t.Substring(0, 63) : t;
         }
 
+        // Informational pop-ups, which the user can switch off. Emergency hibernate messages always show.
+        void Notify(int ms, string title, string text, ToolTipIcon icon)
+        {
+            if (Settings.Notifications) tray.ShowBalloonTip(ms, title, text, icon);
+        }
+
         void Alerts(Sample s)
         {
             if (!s.EcOk) return;
             if (wasSpinning && !s.FanSpinning && statSamples > 3)
             {
                 statStalls++;
-                tray.ShowBalloonTip(5000, "Fan stopped", "The fan is not turning. CPU is " + s.CpuTemp + " °C.", ToolTipIcon.Warning);
+                Notify(5000, "Fan stopped", "The fan is not turning. CPU is " + s.CpuTemp + " °C.", ToolTipIcon.Warning);
             }
             wasSpinning = s.FanSpinning;
             if (s.CpuTemp >= AlertTemp && !hotAlerted)
             {
                 hotAlerted = true;
-                tray.ShowBalloonTip(5000, "CPU is hot", "CPU temperature " + s.CpuTemp + " °C. Reduce load.", ToolTipIcon.Error);
+                Notify(5000, "CPU is hot", "CPU temperature " + s.CpuTemp + " °C. Reduce load.", ToolTipIcon.Error);
             }
             else if (s.CpuTemp < AlertTemp - 5) hotAlerted = false;
         }
@@ -601,7 +611,7 @@ namespace ThinkPadMonitor
                     SetBusy(false);
                     SetStatus(result);
                     holdStatusUntil = DateTime.Now.AddSeconds(20);   // keep the result readable
-                    tray.ShowBalloonTip(4000, balloonTitle, result, ToolTipIcon.Info);
+                    Notify(4000, balloonTitle, result, ToolTipIcon.Info);
                 }));
             });
             th.IsBackground = true;

@@ -13,6 +13,7 @@ namespace ThinkPadMonitor
         public static int EmergencyTemp = 98;       // C
         public static bool LogCsv = false;
         public static bool AlwaysOnTop = false;
+        public static bool Notifications = true;
         public static long FanCheckAfter = 0;       // ticks of the "Restart fan" click; checked after the next boot
 
         public static string Folder
@@ -46,6 +47,7 @@ namespace ThinkPadMonitor
             EmergencyTemp = Int(map, "EmergencyTemp", EmergencyTemp, 80, 104);
             LogCsv = Bool(map, "LogCsv", LogCsv);
             AlwaysOnTop = Bool(map, "AlwaysOnTop", AlwaysOnTop);
+            Notifications = Bool(map, "Notifications", Notifications);
             string v; long l;
             FanCheckAfter = map.TryGetValue("FanCheckAfter", out v) && long.TryParse(v, out l) ? l : 0;
         }
@@ -62,6 +64,7 @@ namespace ThinkPadMonitor
                     "EmergencyTemp=" + EmergencyTemp,
                     "LogCsv=" + LogCsv,
                     "AlwaysOnTop=" + AlwaysOnTop,
+                    "Notifications=" + Notifications,
                     "FanCheckAfter=" + FanCheckAfter,
                 });
             }

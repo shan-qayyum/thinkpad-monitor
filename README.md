@@ -99,6 +99,8 @@ power button. Off until you tick it.
   5 seconds (one file per day).
 - **Always on top**: keeps the window above other windows.
 - **Start with Windows**: starts the app minimized to the tray when you log in.
+- **Show notifications**: on by default. Untick it to silence the pop-ups (fan stopped, CPU hot, CPU held at
+  minimum speed, fan restart and kick-start results). Emergency hibernate messages always show.
 
 Settings are saved in `%AppData%\ThinkPadMonitor\settings.ini`.
 
