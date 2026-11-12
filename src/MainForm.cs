@@ -185,7 +185,7 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.1.0";
+        const string AppVersion = "1.2.0";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification

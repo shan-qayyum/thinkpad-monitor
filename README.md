@@ -110,7 +110,8 @@ Settings are saved in `%AppData%\ThinkPadMonitor\settings.ini`.
 - Hover over it for temperature, fan, clock and load. Left-click to open the dashboard. Right-click for
   ThinkLight, fan mode, Restart fan and **Exit**.
 - Closing the window with **X** only hides it to the tray. Use **Exit** in the tray menu to quit.
-- You get a pop-up notification when the fan stops or the CPU passes 90 °C.
+- You get a pop-up notification when the fan stops or the CPU passes 90 °C (unless **Show notifications** is
+  unticked).
 
 ## Compatibility
 The EC register offsets were read from the X230's own firmware tables and match the ones Linux's `thinkpad_acpi`
