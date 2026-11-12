@@ -1,107 +1,56 @@
-// Windows power-plan and power-state helpers: CPU speed limit ("maximum processor state"), wake timers,
-// hibernate, and a timer that powers the machine back on.
+// Windows power-state helpers: hibernate (for the emergency protection), restart, and the time of the last boot.
 
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace ThinkPadMonitor
 {
     public static class PowerPlan
     {
-        [DllImport("powrprof.dll")] static extern uint PowerGetActiveScheme(IntPtr root, out IntPtr scheme);
-        [DllImport("powrprof.dll")] static extern uint PowerSetActiveScheme(IntPtr root, ref Guid scheme);
-        [DllImport("powrprof.dll")] static extern uint PowerReadACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
-        [DllImport("powrprof.dll")] static extern uint PowerWriteACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
-        [DllImport("powrprof.dll")] static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
         [DllImport("powrprof.dll", SetLastError = true)] static extern bool SetSuspendState(bool hibernate, bool force, bool wakeupEventsDisabled);
         [DllImport("powrprof.dll")] static extern bool IsPwrHibernateAllowed();
-        [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr mem);
-        [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
+        [DllImport("kernel32.dll")] static extern ulong GetTickCount64();
+        [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool LookupPrivilegeValue(string system, string name, out long luid);
+        [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivilege state, int length, IntPtr previous, IntPtr returnLength);
+        [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
 
-        static Guid SubProcessor = new Guid("54533251-82be-4824-96c1-47b60b740d00");
-        static Guid ProcThrottleMax = new Guid("bc5038f7-23e0-4960-96da-33abaf5935ec");
-        static Guid SubSleep = new Guid("238c9fa8-0aad-41ed-83f4-97be242c8f20");
-        static Guid RtcWake = new Guid("bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d");
-
-        const uint ES_CONTINUOUS = 0x80000000, ES_SYSTEM_REQUIRED = 1, ES_DISPLAY_REQUIRED = 2;
-
-        static bool ActiveScheme(out Guid scheme)
-        {
-            scheme = Guid.Empty;
-            IntPtr p;
-            if (PowerGetActiveScheme(IntPtr.Zero, out p) != 0) return false;
-            scheme = (Guid)Marshal.PtrToStructure(p, typeof(Guid));
-            LocalFree(p);
-            return true;
-        }
-
-        static bool Write(Guid sub, Guid setting, uint value)
-        {
-            Guid scheme;
-            if (!ActiveScheme(out scheme)) return false;
-            if (PowerWriteACValueIndex(IntPtr.Zero, ref scheme, ref sub, ref setting, value) != 0) return false;
-            if (PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref sub, ref setting, value) != 0) return false;
-            return PowerSetActiveScheme(IntPtr.Zero, ref scheme) == 0;   // re-apply so the change takes effect now
-        }
-
-        // Maximum processor state of the active power plan (on AC), 1-100, or -1 if it cannot be read.
-        public static int GetCpuMaxPercent()
-        {
-            Guid scheme;
-            uint v;
-            if (!ActiveScheme(out scheme)) return -1;
-            return PowerReadACValueIndex(IntPtr.Zero, ref scheme, ref SubProcessor, ref ProcThrottleMax, out v) == 0 ? (int)v : -1;
-        }
-
-        // Sets the maximum processor state for both AC and battery. 99 or lower also switches Turbo Boost off.
-        public static bool SetCpuMaxPercent(int percent)
-        {
-            return Write(SubProcessor, ProcThrottleMax, (uint)Math.Max(5, Math.Min(100, percent)));
-        }
-
-        public static bool EnableWakeTimers() { return Write(SubSleep, RtcWake, 1); }
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        struct TokenPrivilege { public int Count; public long Luid; public int Attributes; }
 
         public static bool HibernateAvailable { get { try { return IsPwrHibernateAllowed(); } catch { return false; } } }
 
-        // Blocks until the machine is running again. False if Windows refused.
-        public static bool Hibernate() { return SetSuspendState(true, false, false); }
+        public static DateTime LastBoot { get { return DateTime.Now.AddMilliseconds(-(double)GetTickCount64()); } }
 
-        // After a timer wake Windows goes back to sleep within minutes unless something asks it to stay up.
-        public static void KeepAwake(bool on)
+        // Windows refuses to suspend unless the caller has switched on its shutdown privilege.
+        static void EnableShutdownPrivilege()
         {
-            SetThreadExecutionState(on ? ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED : ES_CONTINUOUS);
-        }
-    }
-
-    // A timer that powers the machine back on from sleep or hibernate. Keep it alive until after the resume.
-    public sealed class WakeTimer : IDisposable
-    {
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        static extern IntPtr CreateWaitableTimer(IntPtr attributes, bool manualReset, string name);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        static extern bool SetWaitableTimer(IntPtr timer, ref long dueTime, int period, IntPtr routine, IntPtr arg, bool resume);
-        [DllImport("kernel32.dll")] static extern bool CancelWaitableTimer(IntPtr timer);
-        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-
-        const int ERROR_NOT_SUPPORTED = 50;
-        IntPtr handle;
-
-        // Arms the timer for an absolute time. False if this machine cannot wake itself.
-        public bool Arm(int secondsFromNow)
-        {
-            handle = CreateWaitableTimer(IntPtr.Zero, true, null);
-            if (handle == IntPtr.Zero) return false;
-            long due = DateTime.UtcNow.AddSeconds(secondsFromNow).ToFileTimeUtc();
-            if (!SetWaitableTimer(handle, ref due, 0, IntPtr.Zero, IntPtr.Zero, true)) return false;
-            return Marshal.GetLastWin32Error() != ERROR_NOT_SUPPORTED;
+            IntPtr token;
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0028 /* ADJUST_PRIVILEGES | QUERY */, out token)) return;
+            var tp = new TokenPrivilege { Count = 1, Attributes = 2 /* SE_PRIVILEGE_ENABLED */ };
+            if (LookupPrivilegeValue(null, "SeShutdownPrivilege", out tp.Luid))
+                AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+            CloseHandle(token);
         }
 
-        public void Dispose()
+        // Blocks until the machine is running again. Returns 0 on success, otherwise the Windows error code.
+        public static int Hibernate()
         {
-            if (handle == IntPtr.Zero) return;
-            CancelWaitableTimer(handle);
-            CloseHandle(handle);
-            handle = IntPtr.Zero;
+            EnableShutdownPrivilege();
+            return SetSuspendState(true, false, false) ? 0 : Math.Max(1, Marshal.GetLastWin32Error());
+        }
+
+        // Starts a normal Windows restart. Programs get the usual chance to save or object. False if it could not start.
+        public static bool Restart()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("shutdown.exe", "/r /t 0") { CreateNoWindow = true, UseShellExecute = false };
+                using (Process p = Process.Start(psi)) { p.WaitForExit(10000); return p.ExitCode == 0; }
+            }
+            catch (Exception) { return false; }
         }
     }
 }

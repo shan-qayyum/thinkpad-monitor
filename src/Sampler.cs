@@ -65,8 +65,7 @@ namespace ThinkPadMonitor
 
         public bool FanSpinning { get { return FanRpm > 0; } }
         public bool CpuAtMinimum { get { return CpuMhz > 0 && CpuMhz <= 1300; } }
-        // At minimum clock while busy = something is holding the CPU down, not idle power saving. The caller
-        // decides whether that is the firmware (PROCHOT) or the user's own CPU limit.
+        // At minimum clock while busy = the firmware is holding the CPU down, not idle power saving.
         public bool HeldAtMinimum { get { return CpuAtMinimum && CpuLoad >= 60; } }
 
         public string FanModeText

@@ -1,5 +1,5 @@
 // Dashboard window + tray icon. Samples once a second on a worker thread, applies the fan mode, then repaints
-// the tiles and graph and runs the protections (thermal guard, emergency hibernate) on the UI thread.
+// the tiles and graph and runs the emergency hibernate check on the UI thread.
 
 using System;
 using System.Collections.Generic;
@@ -28,6 +28,43 @@ namespace ThinkPadMonitor
         public static readonly Color Grid = Color.FromArgb(55, 59, 66);
 
         public static Color ForTemp(int c) { return c >= 90 ? Bad : c >= 75 ? Warn : Good; }
+
+        // Graph lines: fixed, high-contrast colours that stay distinct from each other on the dark background.
+        public static readonly Color LineTemp = Color.FromArgb(255, 150, 40);    // orange
+        public static readonly Color LineRpm = Color.FromArgb(60, 220, 150);     // green
+        public static readonly Color LineMhz = Color.FromArgb(160, 140, 255);    // violet
+    }
+
+    // Sets a label's text at the largest font size (down to a minimum) at which all of it fits, so no text is
+    // ever clipped. Fonts are cached because this runs every second.
+    static class TextFit
+    {
+        static readonly Dictionary<string, Font> fonts = new Dictionary<string, Font>();
+
+        public static Font Get(float size, FontStyle style)
+        {
+            string key = size.ToString(CultureInfo.InvariantCulture) + style;
+            Font f;
+            if (!fonts.TryGetValue(key, out f)) { f = new Font("Segoe UI", size, style); fonts[key] = f; }
+            return f;
+        }
+
+        public static void Set(Label label, string text, float maxSize, float minSize, FontStyle style, bool wrap)
+        {
+            TextFormatFlags flags = wrap ? TextFormatFlags.WordBreak : TextFormatFlags.SingleLine;
+            Size room = new Size(label.Width - 4, label.Height);
+            float size = maxSize;
+            Font f = Get(size, style);
+            while (size > minSize)
+            {
+                Size need = TextRenderer.MeasureText(text, f, new Size(wrap ? room.Width : int.MaxValue, int.MaxValue), flags);
+                if (need.Width <= room.Width && need.Height <= room.Height) break;
+                size -= 0.5f;
+                f = Get(size, style);
+            }
+            if (!ReferenceEquals(label.Font, f)) label.Font = f;
+            if (label.Text != text) label.Text = text;
+        }
     }
 
     class Choice
@@ -44,26 +81,27 @@ namespace ThinkPadMonitor
         public Tile(string title)
         {
             BackColor = Theme.Tile;
-            Size = new Size(174, 92);
+            Size = new Size(174, 96);
             Margin = new Padding(6);
-            caption = MakeLabel(title.ToUpperInvariant(), 8f, FontStyle.Bold, Theme.Dim, 8);
-            value = MakeLabel("--", 20f, FontStyle.Bold, Theme.Text, 26);
-            detail = MakeLabel("", 8.5f, FontStyle.Regular, Theme.Dim, 66);
+            caption = MakeLabel(8, 20);
+            value = MakeLabel(26, 40);
+            detail = MakeLabel(68, 22);
             Controls.Add(caption); Controls.Add(value); Controls.Add(detail);
+            caption.ForeColor = Theme.Dim;
+            TextFit.Set(caption, title.ToUpperInvariant(), 8f, 6.5f, FontStyle.Bold, false);
+            Set("--", Theme.Text, "");
         }
 
-        Label MakeLabel(string text, float size, FontStyle style, Color color, int top)
+        Label MakeLabel(int top, int height)
         {
-            return new Label
-            {
-                Text = text, AutoSize = false, Left = 10, Top = top, Width = 160, Height = (int)(size * 2) + 4,
-                Font = new Font("Segoe UI", size, style), ForeColor = color, BackColor = Color.Transparent
-            };
+            return new Label { AutoSize = false, Left = 8, Top = top, Width = 162, Height = height, BackColor = Color.Transparent, ForeColor = Theme.Dim };
         }
 
         public void Set(string v, Color c, string d)
         {
-            value.Text = v; value.ForeColor = c; detail.Text = d;
+            TextFit.Set(value, v, 20f, 11f, FontStyle.Bold, false);
+            value.ForeColor = c;
+            TextFit.Set(detail, d, 8.5f, 6.5f, FontStyle.Regular, false);
         }
     }
 
@@ -84,19 +122,21 @@ namespace ThinkPadMonitor
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle r = new Rectangle(34, 22, Width - 80, Height - 40);
+            Rectangle r = new Rectangle(34, 24, Width - 80, Height - 44);
 
             using (var font = new Font("Segoe UI", 7.5f))
             using (var bold = new Font("Segoe UI", 8f, FontStyle.Bold))
             using (var dim = new SolidBrush(Theme.Dim))
-            using (var warn = new SolidBrush(Theme.Warn))
-            using (var accent = new SolidBrush(Theme.Accent))
+            using (var tempBrush = new SolidBrush(Theme.LineTemp))
+            using (var rpmBrush = new SolidBrush(Theme.LineRpm))
+            using (var mhzBrush = new SolidBrush(Theme.LineMhz))
             using (var bad = new SolidBrush(Theme.Bad))
             {
-                g.DrawString("CPU TEMP (C)", bold, warn, 8, 4);
-                g.DrawString("FAN RPM (0-" + RpmScale + ")", bold, dim, 110, 4);
-                g.DrawString("last 5 min", font, dim, Width / 2 + 10, 5);
-                g.DrawString("CPU MHz", bold, accent, Width - 70, 4);
+                g.DrawString("■ CPU TEMP (°C, left scale)", bold, tempBrush, 8, 5);
+                g.DrawString("■ FAN RPM (0-" + RpmScale + ")", bold, rpmBrush, 210, 5);
+                g.DrawString("last 5 minutes", font, dim, 360, 6);
+                SizeF mhzSize = g.MeasureString("■ CPU MHz (right scale)", bold);
+                g.DrawString("■ CPU MHz (right scale)", bold, mhzBrush, Width - mhzSize.Width - 8, 5);
 
                 const int tMin = 30, tMax = 105;
                 using (var gridPen = new Pen(Theme.Grid))
@@ -111,6 +151,7 @@ namespace ThinkPadMonitor
                 int maxMhz = last != null && last.CpuMaxMhz > 0 ? last.CpuMaxMhz : 2600;
                 g.DrawString(maxMhz.ToString(), font, dim, r.Right + 4, r.Top - 7);
                 g.DrawString("0", font, dim, r.Right + 4, r.Bottom - 7);
+                g.DrawString("red strip below the chart = fan stopped", font, bad, r.Left, r.Bottom + 5);
                 if (History.Count < 2) return;
 
                 float dx = (float)r.Width / (Capacity - 1);
@@ -127,16 +168,15 @@ namespace ThinkPadMonitor
                     tempPts.Add(new PointF(x, r.Bottom - (Math.Max(tMin, Math.Min(tMax, s.CpuTemp)) - tMin) * (float)r.Height / (tMax - tMin)));
                     rpmPts.Add(new PointF(x, r.Bottom - Math.Min(Math.Max(s.FanRpm, 0), RpmScale) * (float)r.Height / RpmScale));
                 }
-                using (var p = new Pen(Color.FromArgb(120, Theme.Dim), 1.2f)) if (rpmPts.Count > 1) g.DrawLines(p, rpmPts.ToArray());
-                using (var p = new Pen(Color.FromArgb(160, Theme.Accent), 1.5f)) g.DrawLines(p, mhzPts.ToArray());
-                using (var p = new Pen(Theme.ForTemp(last.CpuTemp), 2.2f)) if (tempPts.Count > 1) g.DrawLines(p, tempPts.ToArray());
+                using (var p = new Pen(Theme.LineMhz, 2.5f) { LineJoin = LineJoin.Round }) g.DrawLines(p, mhzPts.ToArray());
+                using (var p = new Pen(Theme.LineRpm, 2.5f) { LineJoin = LineJoin.Round }) if (rpmPts.Count > 1) g.DrawLines(p, rpmPts.ToArray());
+                using (var p = new Pen(Theme.LineTemp, 3f) { LineJoin = LineJoin.Round }) if (tempPts.Count > 1) g.DrawLines(p, tempPts.ToArray());
 
                 // Mark the stretches where the fan was not turning.
-                using (var shade = new SolidBrush(Color.FromArgb(90, Theme.Bad)))
+                using (var shade = new SolidBrush(Theme.Bad))
                     for (int i = 0; i < History.Count; i++)
                         if (History[i].EcOk && !History[i].FanSpinning)
-                            g.FillRectangle(shade, r.Left + (offset + i) * dx, r.Bottom - 4, dx + 0.5f, 4);
-                g.DrawString("red strip = fan stopped", font, bad, r.Left, r.Bottom + 3);
+                            g.FillRectangle(shade, r.Left + (offset + i) * dx, r.Bottom + 1, dx + 0.5f, 3);
             }
         }
     }
@@ -149,7 +189,7 @@ namespace ThinkPadMonitor
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
-        const int RestartWakeSeconds = 75;     // long enough for the hibernate image to be written first
+        const string CsvHeader = "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,on_ac,battery_pct,charger_w,charger_limit_flag,thermal_flags,firmware_limit_reason";
 
         static readonly Choice[] FanModes =
         {
@@ -161,7 +201,6 @@ namespace ThinkPadMonitor
             new Choice("Level 4", "4"), new Choice("Level 3", "3"), new Choice("Level 2", "2"),
             new Choice("Level 1 (slowest)", "1"),
         };
-        static readonly int[] CpuLimits = { 100, 99, 85, 70, 50, 30 };
 
         readonly Sampler sampler = new Sampler();
         readonly Tile tTemp = new Tile("CPU temperature"), tFan = new Tile("Fan"), tClock = new Tile("CPU speed"),
@@ -169,23 +208,19 @@ namespace ThinkPadMonitor
                       tPeak = new Tile("Session temperature"), tHealth = new Tile("Fan this session");
         readonly Graph graph = new Graph();
         readonly Label status = new Label();
-        readonly ComboBox cbFan = new ComboBox(), cbCpu = new ComboBox();
-        readonly CheckBox cGuard = new CheckBox(), cEmergency = new CheckBox(), cLog = new CheckBox(),
-                          cTop = new CheckBox(), cStartup = new CheckBox();
-        readonly NumericUpDown nGuard = new NumericUpDown(), nEmergency = new NumericUpDown();
+        readonly ComboBox cbFan = new ComboBox();
+        readonly CheckBox cEmergency = new CheckBox(), cLog = new CheckBox(), cTop = new CheckBox(), cStartup = new CheckBox();
+        readonly NumericUpDown nEmergency = new NumericUpDown();
         readonly Button bLight = new Button(), bRestart = new Button(), bKick = new Button(), bLogs = new Button();
         readonly NotifyIcon tray = new NotifyIcon();
-        readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("Fan mode"), cpuMenu = new ToolStripMenuItem("CPU limit");
-        readonly System.Windows.Forms.Timer awakeTimer = new System.Windows.Forms.Timer();
+        readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("Fan mode");
         System.Threading.Timer timer;
-        WakeTimer wakeTimer;
         IntPtr trayIconHandle = IntPtr.Zero;
         int sampling;
-        bool loading = true, exiting, busy, restartPending;
-        bool wasSpinning = true, hotAlerted, guardActive, lockAlerted;
-        int cpuLimit = 100, stallSecs, calmSecs, criticalSecs, ticks, lockSecs;
-        bool firmwareLocked;                   // held at minimum clock by the firmware for 10 s or more
-        string lastTrigger;                   // most recent firmware limit condition seen, e.g. "charger power limit"
+        bool loading = true, exiting, busy;
+        bool wasSpinning = true, hotAlerted, lockAlerted;
+        int criticalSecs, ticks, lockSecs;
+        string lastTrigger;                    // most recent firmware limit condition seen, e.g. "charger power limit"
         DateTime lastTriggerTime, holdStatusUntil;
 
         // Session statistics
@@ -201,61 +236,45 @@ namespace ThinkPadMonitor
             Font = new Font("Segoe UI", 9f);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
-            ClientSize = new Size(756, 624);
+            ClientSize = new Size(756, 616);
             StartPosition = FormStartPosition.CenterScreen;
 
-            var tiles = new FlowLayoutPanel { Left = 6, Top = 6, Width = 748, Height = 210, BackColor = Theme.Back };
+            var tiles = new FlowLayoutPanel { Left = 6, Top = 6, Width = 748, Height = 218, BackColor = Theme.Back };
             tiles.Controls.AddRange(new Control[] { tTemp, tFan, tClock, tLoad, tPower, tLight, tPeak, tHealth });
             Controls.Add(tiles);
-            graph.SetBounds(12, 220, 732, 190);
+            graph.SetBounds(12, 226, 732, 190);
             Controls.Add(graph);
 
-            // Row 1: fan mode and CPU limit
-            AddLabel("Fan mode", 12, 424, 62);
-            StyleCombo(cbFan, 76, 420, 230);
+            // Row 1: fan mode, CSV logging
+            Label lFan = AddLabel("Fan mode", 12, 432);
+            StyleCombo(cbFan, lFan.Right + 8, 428, 250);
             cbFan.Items.AddRange(FanModes);
-            AddLabel("CPU limit", 330, 424, 62);
-            StyleCombo(cbCpu, 394, 420, 230);
-            int maxMhz = sampler.MaxMhz > 0 ? sampler.MaxMhz : 2600;
-            foreach (int pct in CpuLimits)
-                cbCpu.Items.Add(new Choice(pct == 100 ? "No limit (100 %)"
-                    : pct == 99 ? "No turbo boost (99 %)"
-                    : string.Format("{0} %  (about {1} MHz)", pct, maxMhz * pct / 100), pct.ToString()));
+            StyleCheck(cLog, "Log readings to CSV", 0, 430);
+            cLog.Left = 744 - cLog.Width;
 
-            // Row 2 and 3: protections
-            StyleCheck(cGuard, "Thermal guard: cap CPU to " + Settings.GuardPercent + " % at", 12, 454, 232);
-            StyleNumber(nGuard, 246, 453, 60, 100, Settings.GuardTemp);
-            AddLabel("°C or when the fan stops, and lift the cap once it is cool again", 304, 457, 440);
-            StyleCheck(cEmergency, "Emergency hibernate if the CPU stays at", 12, 482, 250);
-            StyleNumber(nEmergency, 264, 481, 80, 104, Settings.EmergencyTemp);
-            AddLabel("°C or more for 5 seconds", 322, 485, 200);
-            StyleCheck(cLog, "Log readings to CSV", 560, 482, 150);
+            // Row 2: emergency hibernate
+            StyleCheck(cEmergency, "Emergency hibernate if the CPU stays at", 12, 464);
+            StyleNumber(nEmergency, cEmergency.Right + 4, 462, 80, 104, Settings.EmergencyTemp);
+            AddLabel("°C or more for 5 seconds", nEmergency.Right + 6, 466);
 
-            // Row 4: actions
-            StyleButton(bLight, "ThinkLight", 12, 514, 130);
-            StyleButton(bRestart, "Restart fan + unlock CPU", 150, 514, 230);
-            StyleButton(bKick, "Kick-start (experimental)", 388, 514, 210);
-            StyleButton(bLogs, "Open logs", 606, 514, 138);
+            // Row 3: actions
+            int x = 12;
+            x = StyleButton(bLight, "ThinkLight", x, 498) + 8;
+            x = StyleButton(bRestart, "Restart fan (reboots)", x, 498) + 8;
+            x = StyleButton(bKick, "Kick-start fan (experimental)", x, 498) + 8;
+            StyleButton(bLogs, "Open log folder", x, 498);
 
-            // Row 5: window options
-            StyleCheck(cTop, "Always on top", 12, 560, 130);
-            StyleCheck(cStartup, "Start with Windows", 150, 560, 160);
+            // Row 4: window options
+            StyleCheck(cTop, "Always on top", 12, 546);
+            StyleCheck(cStartup, "Start with Windows", cTop.Right + 16, 546);
 
-            status.SetBounds(12, 588, 732, 32);
+            status.SetBounds(12, 574, 732, 38);
             status.ForeColor = Theme.Dim;
-            status.Text = "Starting...";
             Controls.Add(status);
+            SetStatus("Starting...");
 
             // Initial values (no events while loading)
             cbFan.SelectedIndex = Math.Max(0, Array.FindIndex(FanModes, delegate(Choice c) { return c.Key == Settings.FanMode; }));
-            if (Settings.GuardActive)             // the app last ended with the guard's cap still applied: undo it
-            {
-                PowerPlan.SetCpuMaxPercent(Settings.GuardRestore);
-                Settings.GuardActive = false;
-                Settings.Save();
-            }
-            RefreshCpuLimit();
-            cGuard.Checked = Settings.GuardEnabled;
             cEmergency.Checked = Settings.EmergencyEnabled;
             cLog.Checked = Settings.LogCsv;
             cTop.Checked = TopMost = Settings.AlwaysOnTop;
@@ -263,9 +282,6 @@ namespace ThinkPadMonitor
             loading = false;
 
             cbFan.SelectedIndexChanged += delegate { if (!loading) { Settings.FanMode = ((Choice)cbFan.SelectedItem).Key; Settings.Save(); } };
-            cbCpu.SelectedIndexChanged += delegate { if (!loading) SetCpuLimit(int.Parse(((Choice)cbCpu.SelectedItem).Key)); };
-            cGuard.CheckedChanged += delegate { if (!loading) { Settings.GuardEnabled = cGuard.Checked; Settings.Save(); } };
-            nGuard.ValueChanged += delegate { if (!loading) { Settings.GuardTemp = (int)nGuard.Value; Settings.Save(); } };
             cEmergency.CheckedChanged += delegate { if (!loading) { Settings.EmergencyEnabled = cEmergency.Checked; Settings.Save(); } };
             nEmergency.ValueChanged += delegate { if (!loading) { Settings.EmergencyTemp = (int)nEmergency.Value; Settings.Save(); } };
             cLog.CheckedChanged += delegate { if (!loading) { Settings.LogCsv = cLog.Checked; Settings.Save(); } };
@@ -282,23 +298,24 @@ namespace ThinkPadMonitor
             tray.Visible = true;
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(); };
 
-            awakeTimer.Interval = 180000;
-            awakeTimer.Tick += delegate { awakeTimer.Stop(); PowerPlan.KeepAwake(false); };
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            CheckPendingFanRestart();
 
             if (startHidden) { ShowInTaskbar = false; WindowState = FormWindowState.Minimized; Load += delegate { Hide(); ShowInTaskbar = true; WindowState = FormWindowState.Normal; }; }
 
             if (!EmbeddedController.DriverAvailable())
-                status.Text = "InpOut driver not found - EC metrics unavailable. Run InstallDriver.exe once (see README).";
+                SetStatus("InpOut driver not found - EC metrics unavailable. Run InstallDriver.exe once (see README).");
 
             timer = new System.Threading.Timer(delegate { Tick(); }, null, 0, 1000);
         }
 
-        // ---------- layout helpers ----------
+        // ---------- layout helpers (every control is sized to its text, so nothing is clipped) ----------
 
-        void AddLabel(string text, int x, int y, int w)
+        Label AddLabel(string text, int x, int y)
         {
-            Controls.Add(new Label { Text = text, Left = x, Top = y, Width = w, Height = 20, ForeColor = Theme.Dim });
+            var l = new Label { Text = text, Left = x, Top = y, AutoSize = true, ForeColor = Theme.Dim };
+            Controls.Add(l);
+            return l;
         }
 
         void StyleCombo(ComboBox c, int x, int y, int w)
@@ -307,14 +324,14 @@ namespace ThinkPadMonitor
             c.DropDownStyle = ComboBoxStyle.DropDownList;
             c.FlatStyle = FlatStyle.Flat;
             c.BackColor = Theme.Tile; c.ForeColor = Theme.Text;
-            // A stray scroll over a focused dropdown must not change the fan mode or the CPU limit.
+            // A stray scroll over a focused dropdown must not change the fan mode.
             c.MouseWheel += delegate(object s, MouseEventArgs e) { if (!c.DroppedDown) ((HandledMouseEventArgs)e).Handled = true; };
             Controls.Add(c);
         }
 
-        void StyleCheck(CheckBox c, string text, int x, int y, int w)
+        void StyleCheck(CheckBox c, string text, int x, int y)
         {
-            c.Text = text; c.SetBounds(x, y, w, 22); c.ForeColor = Theme.Text;
+            c.Text = text; c.Left = x; c.Top = y; c.AutoSize = true; c.ForeColor = Theme.Text;
             Controls.Add(c);
         }
 
@@ -326,14 +343,20 @@ namespace ThinkPadMonitor
             Controls.Add(n);
         }
 
-        void StyleButton(Button b, string text, int x, int y, int w)
+        // Returns the button's right edge.
+        int StyleButton(Button b, string text, int x, int y)
         {
-            b.Text = text; b.SetBounds(x, y, w, 36);
+            b.Text = text;
             b.FlatStyle = FlatStyle.Flat; b.BackColor = Theme.Tile; b.ForeColor = Theme.Text;
             b.FlatAppearance.BorderColor = Theme.Grid;
-            b.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            b.Font = TextFit.Get(9f, FontStyle.Bold);
+            int w = TextRenderer.MeasureText(text, b.Font).Width + 32;
+            b.SetBounds(x, y, w, 36);
             Controls.Add(b);
+            return b.Right;
         }
+
+        void SetStatus(string text) { TextFit.Set(status, text, 9f, 7f, FontStyle.Regular, true); }
 
         void BuildTrayMenu()
         {
@@ -345,21 +368,13 @@ namespace ThinkPadMonitor
                 int index = i;
                 fanMenu.DropDownItems.Add(cbFan.Items[i].ToString(), null, delegate { cbFan.SelectedIndex = index; });
             }
-            for (int i = 0; i < cbCpu.Items.Count; i++)
-            {
-                int index = i;
-                cpuMenu.DropDownItems.Add(cbCpu.Items[i].ToString(), null, delegate { if (cbCpu.Enabled) cbCpu.SelectedIndex = index; });
-            }
             menu.Items.Add(fanMenu);
-            menu.Items.Add(cpuMenu);
-            menu.Items.Add("Restart fan + unlock CPU (hibernate)", null, delegate { ShowDashboard(); RestartFan(); });
+            menu.Items.Add("Restart fan (reboots)", null, delegate { ShowDashboard(); RestartFan(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
             menu.Opening += delegate
             {
                 for (int i = 0; i < fanMenu.DropDownItems.Count; i++) ((ToolStripMenuItem)fanMenu.DropDownItems[i]).Checked = i == cbFan.SelectedIndex;
-                for (int i = 0; i < cpuMenu.DropDownItems.Count; i++) ((ToolStripMenuItem)cpuMenu.DropDownItems[i]).Checked = i == cbCpu.SelectedIndex;
-                cpuMenu.Enabled = cbCpu.Enabled;
             };
             tray.ContextMenuStrip = menu;
         }
@@ -385,7 +400,6 @@ namespace ThinkPadMonitor
             graph.History.Add(s);
             if (graph.History.Count > Graph.Capacity) graph.History.RemoveAt(0);
             graph.Invalidate();
-            if (ticks % 10 == 0 && !guardActive) RefreshCpuLimit();   // picks up changes made in Windows settings
 
             if (s.EcOk)
             {
@@ -397,11 +411,11 @@ namespace ThinkPadMonitor
                     s.CpuTemp >= AlertTemp ? "Hot - Intel limit 105 °C" : "Intel limit 105 °C");
                 if (s.FanSpinning) tFan.Set(s.FanRpm + " rpm", Theme.Good, s.FanModeText);
                 else tFan.Set("STOPPED", Theme.Bad, "Commanded: " + s.FanModeText);
-                tLight.Set(s.ThinkLightOn ? "ON" : "OFF", s.ThinkLightOn ? Theme.Warn : Theme.Dim, "Use the button below");
+                tLight.Set(s.ThinkLightOn ? "ON" : "OFF", s.ThinkLightOn ? Theme.Warn : Theme.Dim, "Use the ThinkLight button");
                 tPeak.Set("max " + statMax + " °C", Theme.ForTemp(statMax),
                     string.Format("min {0} °C  ·  avg {1} °C", statMin, statSum / statSamples));
                 int pct = statSpinning * 100 / statSamples;
-                tHealth.Set(pct + " % up", pct >= 95 ? Theme.Good : pct >= 50 ? Theme.Warn : Theme.Bad,
+                tHealth.Set(pct + " % turning", pct >= 95 ? Theme.Good : pct >= 50 ? Theme.Warn : Theme.Bad,
                     statStalls == 1 ? "1 stall" : statStalls + " stalls");
             }
             else
@@ -411,28 +425,26 @@ namespace ThinkPadMonitor
                 tLight.Set("n/a", Theme.Dim, "EC unavailable");
             }
 
+            bool locked = false;
             if (s.CpuMhz > 0)
             {
-                bool cappedLow = cpuLimit * s.CpuMaxMhz / 100 <= 1400;     // our own limit explains a low clock
-                bool throttled = s.HeldAtMinimum && !cappedLow;
                 string why = s.FirmwareLimitReason;
                 if (why != null) { lastTrigger = why; lastTriggerTime = s.Time; }
                 // The firmware's conditions often clear within a second while Windows keeps the limit it was
-                // handed, so a lock with no active condition is reported as latched.
-                lockSecs = throttled ? lockSecs + 1 : 0;
-                firmwareLocked = lockSecs >= 10;
-                if (firmwareLocked && !lockAlerted)
+                // handed, so the CPU can stay at minimum speed with no condition active at that moment.
+                bool held = s.HeldAtMinimum;
+                lockSecs = held ? lockSecs + 1 : 0;
+                locked = lockSecs >= 10;
+                if (locked && !lockAlerted)
                 {
                     lockAlerted = true;
-                    tray.ShowBalloonTip(6000, "CPU locked at minimum speed", "The firmware is holding the CPU at " + s.CpuMhz +
-                        " MHz" + TriggerText() + ". \"Restart fan + unlock CPU\" clears it.", ToolTipIcon.Warning);
+                    tray.ShowBalloonTip(6000, "CPU held at minimum speed",
+                        "The firmware is holding the CPU at " + s.CpuMhz + " MHz under load" + TriggerText() + ".", ToolTipIcon.Warning);
                 }
-                else if (!throttled) lockAlerted = false;
-                string d = throttled ? (why != null ? "THROTTLED: " + why : "THROTTLED: firmware lock")
-                         : guardActive ? "Capped by thermal guard"
-                         : cpuLimit < 100 ? "Limit " + cpuLimit + " %"
+                else if (!held) lockAlerted = false;
+                string d = held ? (why != null ? "Held: " + why : "Held by firmware")
                          : s.CpuAtMinimum ? "Minimum clock" : "of " + s.CpuMaxMhz + " MHz max";
-                tClock.Set(s.CpuMhz + " MHz", throttled ? Theme.Bad : guardActive || s.CpuAtMinimum ? Theme.Warn : Theme.Good, d);
+                tClock.Set(s.CpuMhz + " MHz", held ? Theme.Bad : s.CpuAtMinimum ? Theme.Warn : Theme.Good, d);
             }
             else tClock.Set("n/a", Theme.Dim, "counter unavailable");
 
@@ -442,18 +454,20 @@ namespace ThinkPadMonitor
                 s.EcOk && s.ChargerWatts > 0 ? s.ChargerWatts + " W charger  ·  " + s.BatteryState : s.BatteryState);
 
             if (!busy && s.Time >= holdStatusUntil)
-                status.Text =!s.EcOk ? "EC read failed: " + s.EcError
+                SetStatus(!s.EcOk ? "EC read failed: " + s.EcError
                     : "Updated " + s.Time.ToString("HH:mm:ss")
-                      + (guardActive ? "   •   Thermal guard is capping the CPU." : "")
-                      + (firmwareLocked ? "   •   Firmware lock on CPU speed" + TriggerText() + ": use Restart fan + unlock CPU."
-                         : s.FirmwareLimitReason != null ? "   •   Firmware limit condition: " + s.FirmwareLimitReason + "." : "")
-                      + (s.FanSpinning ? "" : "   •   Fan not turning: try Restart fan, keep the load light.");
+                      + (locked ? "   •   Firmware is holding the CPU at minimum speed" + TriggerText() + "." : "")
+                      + (s.FanSpinning ? "" : "   •   Fan not turning: try Restart fan, keep the load light."));
 
             UpdateTray(s);
             Alerts(s);
-            ThermalGuard(s);
             Emergency(s);
             if (Settings.LogCsv && ticks % 5 == 0) LogCsv(s);
+        }
+
+        string TriggerText()
+        {
+            return lastTrigger == null ? "" : " (last trigger: " + lastTrigger + " at " + lastTriggerTime.ToString("HH:mm:ss") + ")";
         }
 
         void UpdateTray(Sample s)
@@ -497,75 +511,33 @@ namespace ThinkPadMonitor
             else if (s.CpuTemp < AlertTemp - 5) hotAlerted = false;
         }
 
-        // ---------- CPU limit and protections ----------
-
-        void RefreshCpuLimit()
-        {
-            int now = PowerPlan.GetCpuMaxPercent();
-            if (now <= 0) return;
-            cpuLimit = now;
-            int best = 0;
-            for (int i = 1; i < CpuLimits.Length; i++)
-                if (Math.Abs(CpuLimits[i] - now) < Math.Abs(CpuLimits[best] - now)) best = i;
-            if (cbCpu.SelectedIndex == best) return;
-            bool was = loading;
-            loading = true;
-            cbCpu.SelectedIndex = best;
-            loading = was;
-        }
-
-        void SetCpuLimit(int percent)
-        {
-            if (PowerPlan.SetCpuMaxPercent(percent)) cpuLimit = percent;
-            else status.Text = "Windows refused the CPU limit change.";
-        }
-
-        // Caps the CPU while it is hot or the fan is stopped; lifts the cap after 30 calm seconds.
-        void ThermalGuard(Sample s)
-        {
-            if (!s.EcOk) return;
-            stallSecs = s.FanSpinning ? 0 : stallSecs + 1;
-            if (!guardActive)
-            {
-                if (!Settings.GuardEnabled || (s.CpuTemp < Settings.GuardTemp && stallSecs < 10)) return;
-                int before = PowerPlan.GetCpuMaxPercent();
-                if (before <= 0) return;
-                Settings.GuardRestore = before;
-                Settings.GuardActive = true;
-                Settings.Save();
-                SetCpuLimit(Math.Min(before, Settings.GuardPercent));
-                guardActive = true; calmSecs = 0;
-                cbCpu.Enabled = false;
-                tray.ShowBalloonTip(5000, "Thermal guard", s.FanSpinning
-                    ? "CPU reached " + s.CpuTemp + " °C. CPU capped to " + Settings.GuardPercent + " %."
-                    : "The fan stopped. CPU capped to " + Settings.GuardPercent + " %.", ToolTipIcon.Warning);
-                return;
-            }
-            bool calm = s.FanSpinning && s.CpuTemp <= Settings.GuardTemp - 10;
-            calmSecs = calm ? calmSecs + 1 : 0;
-            if (!Settings.GuardEnabled || calmSecs >= 30) ReleaseGuard();
-        }
-
-        void ReleaseGuard()
-        {
-            if (!guardActive) return;
-            SetCpuLimit(Settings.GuardRestore);
-            guardActive = false;
-            Settings.GuardActive = false;
-            Settings.Save();
-            cbCpu.Enabled = true;
-            RefreshCpuLimit();
-        }
-
         void Emergency(Sample s)
         {
             if (!s.EcOk || !Settings.EmergencyEnabled || s.CpuTemp < Settings.EmergencyTemp) { criticalSecs = 0; return; }
             if (++criticalSecs < 5) return;
             criticalSecs = 0;
             tray.ShowBalloonTip(5000, "Emergency hibernate", "CPU stayed at " + s.CpuTemp + " °C. Hibernating now.", ToolTipIcon.Error);
-            var th = new Thread(delegate() { Thread.Sleep(1500); PowerPlan.Hibernate(); });
+            var th = new Thread(delegate()
+            {
+                Thread.Sleep(1500);
+                int err = PowerPlan.Hibernate();
+                if (err == 0) return;
+                BeginInvoke(new Action(delegate
+                {
+                    SetStatus("Emergency hibernate failed: Windows refused (error " + err + "). Shut the laptop down now.");
+                    holdStatusUntil = DateTime.Now.AddSeconds(60);
+                    tray.ShowBalloonTip(10000, "Emergency hibernate failed",
+                        "Windows refused to hibernate (error " + err + "). Shut the laptop down now.", ToolTipIcon.Error);
+                }));
+            });
             th.IsBackground = true;
             th.Start();
+        }
+
+        static string CsvField(string v)
+        {
+            if (v == null) return "";
+            return v.IndexOfAny(new[] { ',', '"', '\n' }) < 0 ? v : "\"" + v.Replace("\"", "\"\"") + "\"";
         }
 
         void LogCsv(Sample s)
@@ -574,12 +546,24 @@ namespace ThinkPadMonitor
             {
                 Directory.CreateDirectory(Settings.LogFolder);
                 string path = Path.Combine(Settings.LogFolder, s.Time.ToString("yyyy-MM-dd") + ".csv");
-                if (!File.Exists(path))
-                    File.WriteAllText(path, "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,cpu_limit_pct,on_ac,battery_pct,charger_w,charger_limit_flag,thermal_flags,firmware_limit_reason\r\n");
-                File.AppendAllText(path, string.Format(CultureInfo.InvariantCulture, "{0:HH:mm:ss},{1},{2},0x{3:X2},{4},{5},{6},{7},{8},{9},{10},0x{11:X2},{12}\r\n",
-                    s.Time, s.EcOk ? s.CpuTemp.ToString() : "", s.EcOk ? Math.Max(0, s.FanRpm).ToString() : "", s.FanLevel,
-                    s.CpuMhz, s.CpuLoad, cpuLimit, s.OnAc ? 1 : 0, s.BatteryPercent,
-                    s.ChargerWatts, s.ChargerLimit ? 1 : 0, s.ThermalFlags, s.FirmwareLimitReason));
+                if (File.Exists(path))
+                {
+                    string first;
+                    using (var r = new StreamReader(path)) first = r.ReadLine();
+                    if (first != CsvHeader)                 // written by an older version with other columns
+                        File.Move(path, Path.Combine(Settings.LogFolder, s.Time.ToString("yyyy-MM-dd") + "-old-" + DateTime.Now.Ticks + ".csv"));
+                }
+                if (!File.Exists(path)) File.WriteAllText(path, CsvHeader + "\r\n");
+                File.AppendAllText(path, string.Format(CultureInfo.InvariantCulture, "{0:HH:mm:ss},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}\r\n",
+                    s.Time,
+                    s.EcOk ? s.CpuTemp.ToString(CultureInfo.InvariantCulture) : "",
+                    s.EcOk ? Math.Max(0, s.FanRpm).ToString(CultureInfo.InvariantCulture) : "",
+                    s.EcOk ? "0x" + s.FanLevel.ToString("X2") : "",
+                    s.CpuMhz, s.CpuLoad, s.OnAc ? 1 : 0, s.BatteryPercent,
+                    s.EcOk ? s.ChargerWatts.ToString(CultureInfo.InvariantCulture) : "",
+                    s.EcOk ? (s.ChargerLimit ? "1" : "0") : "",
+                    s.EcOk ? "0x" + s.ThermalFlags.ToString("X2") : "",
+                    CsvField(s.FirmwareLimitReason)));
             }
             catch (IOException) { }                 // file open in a spreadsheet: skip this line
             catch (UnauthorizedAccessException) { }
@@ -594,7 +578,7 @@ namespace ThinkPadMonitor
                 byte cur = EmbeddedController.Read(Ec.THINKLIGHT);
                 EmbeddedController.Write(Ec.THINKLIGHT, (byte)(cur ^ Ec.THINKLIGHT_BIT));
             }
-            catch (Exception ex) { status.Text = "ThinkLight: " + ex.Message; }
+            catch (Exception ex) { SetStatus("ThinkLight: " + ex.Message); }
         }
 
         void SetBusy(bool on)
@@ -611,11 +595,11 @@ namespace ThinkPadMonitor
             SetBusy(true);
             var th = new Thread(delegate()
             {
-                string result = job(delegate(string msg) { BeginInvoke(new Action(delegate { status.Text = msg; })); });
+                string result = job(delegate(string msg) { BeginInvoke(new Action(delegate { SetStatus(msg); })); });
                 BeginInvoke(new Action(delegate
                 {
                     SetBusy(false);
-                    status.Text = result;
+                    SetStatus(result);
                     holdStatusUntil = DateTime.Now.AddSeconds(20);   // keep the result readable
                     tray.ShowBalloonTip(4000, balloonTitle, result, ToolTipIcon.Info);
                 }));
@@ -626,102 +610,62 @@ namespace ThinkPadMonitor
 
         void KickFan() { RunFanJob(FanKicker.Run, "Fan kick"); }
 
-        // The firmware runs the fan blind during a cold start, which can free a fan the EC has given up on.
-        // Hibernate plus a wake timer triggers that cold start without anyone touching the power button.
+        // The firmware drives the fan blind while the machine boots, which can free a fan the EC has stopped driving.
+        // A normal Windows restart triggers that and always comes back by itself (timed wake from hibernate proved
+        // unreliable on the X230). The fan is checked once the app starts again after the reboot.
         void RestartFan()
         {
             if (busy) return;
-            if (!PowerPlan.HibernateAvailable)
-            {
-                MessageBox.Show(this, "Hibernate is switched off on this PC, so the fan restart cannot run.\n\n" +
-                    "To enable it, run this in an administrator command prompt:\n    powercfg /hibernate on",
-                    "Restart fan", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
             DialogResult answer = MessageBox.Show(this,
-                "This hibernates the laptop and powers it back on by itself about " + RestartWakeSeconds + " seconds later.\n\n" +
-                "Starting up from cold is what makes the firmware spin the fan again, and it also clears a firmware lock " +
-                "on the CPU speed. Your open programs are kept, but save your work first.\n\n" +
-                "If the laptop has not come back after 5 minutes, press the power button.\n\nHibernate now?",
-                "Restart fan + unlock CPU", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+                "This restarts Windows. Save your work first: open programs will close.\n\n" +
+                "While the laptop boots, its firmware runs the fan at full power, which can get a stuck fan turning again. " +
+                "When ThinkPad Monitor starts after the restart, it checks the fan and shows the result.\n\nRestart now?",
+                "Restart fan", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes) return;
 
-            PowerPlan.EnableWakeTimers();
-            if (wakeTimer != null) wakeTimer.Dispose();
-            wakeTimer = new WakeTimer();
-            if (!wakeTimer.Arm(RestartWakeSeconds))
+            Settings.FanCheckAfter = DateTime.Now.Ticks;
+            Settings.Save();
+            if (!StartupEnabled()) ScheduleRunOnce();          // so the app runs once after the reboot to check the fan
+            SetStatus("Restarting Windows...");
+            if (PowerPlan.Restart()) return;
+            Settings.FanCheckAfter = 0;
+            Settings.Save();
+            SetStatus("Windows could not start the restart. Nothing was changed.");
+        }
+
+        static void ScheduleRunOnce()
+        {
+            try
             {
-                wakeTimer.Dispose(); wakeTimer = null;
-                status.Text = "This PC cannot wake itself from hibernate, so the fan restart was cancelled.";
-                return;
+                using (RegistryKey k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\RunOnce"))
+                    k.SetValue(RunName, "\"" + Application.ExecutablePath + "\"");
             }
-            restartPending = true;
-            status.Text = "Hibernating... the laptop will power back on by itself.";
-            var th = new Thread(delegate()
-            {
-                Thread.Sleep(800);
-                if (PowerPlan.Hibernate()) return;
-                BeginInvoke(new Action(delegate
-                {
-                    restartPending = false;
-                    wakeTimer.Dispose(); wakeTimer = null;
-                    status.Text = "Windows refused to hibernate. Fan restart cancelled.";
-                }));
-            });
-            th.IsBackground = true;
-            th.Start();
+            catch (Exception) { }                            // the check then simply runs at the next manual start
         }
 
-        string TriggerText()
+        // Runs the fan check if "Restart fan" was clicked before the most recent boot.
+        void CheckPendingFanRestart()
         {
-            return lastTrigger == null ? "" : " (last trigger: " + lastTrigger + " at " + lastTriggerTime.ToString("HH:mm:ss") + ")";
-        }
-
-        // Loads two cores for a few seconds and reports the clock Windows now allows. Resuming from hibernate makes
-        // Windows re-read the firmware's speed limit, so a lock whose cause has gone is cleared by the restart.
-        static string CheckCpuAfterRestart(Action<string> progress)
-        {
-            progress("Checking the CPU speed...");
-            bool stop = false;
-            ThreadStart spin = delegate { double x = 1; while (!Volatile.Read(ref stop)) x = x * 1.0000001 + 0.5; };
-            for (int i = 0; i < 2; i++) { var t = new Thread(spin); t.IsBackground = true; t.Start(); }
-            int mhz = 0;
-            using (PdhCounter freq = PdhCounter.Open(@"\Processor Information(_Total)\Processor Frequency"))
-            {
-                for (int i = 0; i < 4; i++) { Thread.Sleep(1000); if (freq != null) mhz = Math.Max(mhz, (int)freq.Next()); }
-            }
-            Volatile.Write(ref stop, true);
-            if (mhz <= 0) return "CPU speed could not be read.";
-            return mhz > 1300 ? "CPU unlocked: " + mhz + " MHz under load."
-                              : "CPU still locked at " + mhz + " MHz: the firmware's limit condition is still active.";
-        }
-
-        static string CheckAfterRestart(Action<string> progress)
-        {
-            string fan = CheckFanAfterRestart(progress);
-            return fan + " " + CheckCpuAfterRestart(progress);
+            if (Settings.FanCheckAfter == 0) return;
+            DateTime clicked = new DateTime(Settings.FanCheckAfter);
+            if (PowerPlan.LastBoot < clicked) return;          // not rebooted yet (e.g. the restart was cancelled)
+            Settings.FanCheckAfter = 0;
+            Settings.Save();
+            if ((DateTime.Now - clicked).TotalHours > 1) return; // too long ago to be this restart's result
+            var t = new System.Windows.Forms.Timer { Interval = 5000 };
+            t.Tick += delegate { t.Stop(); t.Dispose(); ShowDashboard(); RunFanJob(CheckFanAfterRestart, "Fan restart"); };
+            t.Start();
         }
 
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
-            if (e.Mode != PowerModes.Resume || IsDisposed) return;
-            BeginInvoke(new Action(delegate
-            {
-                criticalSecs = 0;
-                if (!restartPending) return;
-                restartPending = false;
-                if (wakeTimer != null) { wakeTimer.Dispose(); wakeTimer = null; }
-                PowerPlan.KeepAwake(true);        // a timer wake goes back to sleep unless told otherwise
-                awakeTimer.Start();
-                ShowDashboard();
-                RunFanJob(CheckAfterRestart, "Restart fan + unlock CPU");
-            }));
+            if (e.Mode == PowerModes.Resume && !IsDisposed) BeginInvoke(new Action(delegate { criticalSecs = 0; }));
         }
 
         // Gives the fan full drive for up to 40 s after the restart and reports whether it kept turning.
         static string CheckFanAfterRestart(Action<string> progress)
         {
-            progress("Back from hibernate - checking the fan...");
+            progress("After the restart - checking the fan...");
             try
             {
                 int streak = 0, rpm = 0;
@@ -764,11 +708,8 @@ namespace ThinkPadMonitor
             }
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             timer.Dispose();
-            ReleaseGuard();                   // never leave the CPU capped or the fan pinned after exit
             FanController.Suspended = true;
-            FanController.Release(Settings.FanMode);
-            PowerPlan.KeepAwake(false);
-            if (wakeTimer != null) wakeTimer.Dispose();
+            FanController.Release(Settings.FanMode);   // never leave the fan pinned at a manual level after exit
             tray.Visible = false;
             tray.Dispose();
             sampler.Dispose();

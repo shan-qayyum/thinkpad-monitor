@@ -9,16 +9,11 @@ namespace ThinkPadMonitor
     public static class Settings
     {
         public static string FanMode = "none";      // none | auto | smart | full | 1..7
-        public static bool GuardEnabled = false;
-        public static int GuardTemp = 85;           // C
-        public static bool GuardActive = false;     // persisted so a crash cannot leave the CPU capped for good
-        public static int GuardRestore = 100;       // CPU limit to put back when the guard releases
         public static bool EmergencyEnabled = false;
         public static int EmergencyTemp = 98;       // C
         public static bool LogCsv = false;
         public static bool AlwaysOnTop = false;
-
-        public const int GuardPercent = 50;
+        public static long FanCheckAfter = 0;       // ticks of the "Restart fan" click; checked after the next boot
 
         public static string Folder
         {
@@ -47,14 +42,12 @@ namespace ThinkPadMonitor
             catch (UnauthorizedAccessException) { return; }
 
             FanMode = Str(map, "FanMode", FanMode);
-            GuardEnabled = Bool(map, "GuardEnabled", GuardEnabled);
-            GuardTemp = Int(map, "GuardTemp", GuardTemp, 60, 100);
-            GuardActive = Bool(map, "GuardActive", GuardActive);
-            GuardRestore = Int(map, "GuardRestore", GuardRestore, 5, 100);
             EmergencyEnabled = Bool(map, "EmergencyEnabled", EmergencyEnabled);
             EmergencyTemp = Int(map, "EmergencyTemp", EmergencyTemp, 80, 104);
             LogCsv = Bool(map, "LogCsv", LogCsv);
             AlwaysOnTop = Bool(map, "AlwaysOnTop", AlwaysOnTop);
+            string v; long l;
+            FanCheckAfter = map.TryGetValue("FanCheckAfter", out v) && long.TryParse(v, out l) ? l : 0;
         }
 
         public static void Save()
@@ -65,14 +58,11 @@ namespace ThinkPadMonitor
                 File.WriteAllLines(FilePath, new[]
                 {
                     "FanMode=" + FanMode,
-                    "GuardEnabled=" + GuardEnabled,
-                    "GuardTemp=" + GuardTemp,
-                    "GuardActive=" + GuardActive,
-                    "GuardRestore=" + GuardRestore,
                     "EmergencyEnabled=" + EmergencyEnabled,
                     "EmergencyTemp=" + EmergencyTemp,
                     "LogCsv=" + LogCsv,
                     "AlwaysOnTop=" + AlwaysOnTop,
+                    "FanCheckAfter=" + FanCheckAfter,
                 });
             }
             catch (IOException) { }
