@@ -185,7 +185,7 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.2.0";
+        const string AppVersion = "1.2.1";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
@@ -232,6 +232,7 @@ namespace ThinkPadMonitor
         {
             Settings.Load();
             Text = "ThinkPad Monitor " + AppVersion;
+            Icon = AppIcon();
             BackColor = Theme.Back;
             ForeColor = Theme.Text;
             Font = new Font("Segoe UI", 9f);
@@ -298,7 +299,7 @@ namespace ThinkPadMonitor
 
             BuildTrayMenu();
             tray.Text = "ThinkPad Monitor";
-            tray.Icon = SystemIcons.Application;
+            tray.Icon = Icon;                          // replaced by the live temperature after the first reading
             tray.Visible = true;
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(); };
 
@@ -311,6 +312,13 @@ namespace ThinkPadMonitor
                 SetStatus("InpOut driver not found - EC metrics unavailable. Run InstallDriver.exe once (see README).");
 
             timer = new System.Threading.Timer(delegate { Tick(); }, null, 0, 1000);
+        }
+
+        // The fan icon embedded in the .exe (assets\app.ico).
+        static Icon AppIcon()
+        {
+            try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch (Exception) { return SystemIcons.Application; }
         }
 
         // ---------- layout helpers (every control is sized to its text, so nothing is clipped) ----------

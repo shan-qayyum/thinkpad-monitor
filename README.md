@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon-256.png" width="128" alt="ThinkPad Monitor icon"></p>
+
 # ThinkPad Monitor
 
 A tiny Windows dashboard + tray app for older ThinkPads that talks **directly to the embedded controller (EC)**,
@@ -194,6 +196,7 @@ Source layout:
 | `src/FanKicker.cs` | The experimental fan kick-start sequence |
 | `src/PowerPlan.cs` | Hibernate, restart and last boot time |
 | `src/Settings.cs` | Saved settings |
+| `assets/app.ico` | Multi-size app icon (16-256 px) embedded in the .exe |
 | `src/MainForm.cs` | Dashboard window, graph, tray icon, alerts, emergency hibernate and fan restart |
 
 ## Extra scripts

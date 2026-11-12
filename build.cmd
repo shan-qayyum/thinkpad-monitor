@@ -5,7 +5,7 @@ setlocal
 set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 if not exist "%CSC%" (echo .NET Framework 4 compiler not found at %CSC% & exit /b 1)
 if not exist "%~dp0bin" mkdir "%~dp0bin"
-"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /out:"%~dp0bin\ThinkPadMonitor.exe" ^
+"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /out:"%~dp0bin\ThinkPadMonitor.exe" /win32icon:"%~dp0assets\app.ico" ^
   /r:System.Windows.Forms.dll /r:System.Drawing.dll "%~dp0src\*.cs" || exit /b 1
 copy /y "%~dp0third_party\inpout\inpoutx64.dll" "%~dp0bin\" >nul
 copy /y "%~dp0third_party\inpout\InstallDriver.exe" "%~dp0bin\" >nul
