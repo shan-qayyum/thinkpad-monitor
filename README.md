@@ -83,17 +83,24 @@ firmware, so the fan is never left pinned at a manual level.
 
 ### Emergency hibernate
 If the CPU stays at or above the temperature you choose (80-104 °C) for 5 seconds, the laptop hibernates: open
-programs are saved to disk and the machine powers off before it can cook. It stays off until you press the
-power button. Off until you tick it.
+programs are saved to disk and the machine powers off before it can cook. **It powers itself back on about
+5 minutes later** and continues where you were. Off until you tick it.
+
+### Hibernating always comes back by itself
+The app never restarts Windows, and it never hibernates without first arming **two independent wake-ups**: a
+wake timer, and a one-time scheduled task allowed to wake the computer (removed again after waking). If neither
+can be armed, it does not hibernate at all. Waking from hibernate can take a few minutes longer than set.
+
+If the laptop ever stays off (for example after the firmware's own heat cut-out), most ThinkPads can be powered
+on without the power button: with **Power On with AC Attach** enabled in the BIOS (Config > Power), unplug the
+charger and plug it back in.
 
 ### Buttons
 - **ThinkLight**: switches the ThinkLight on or off. No Fn key needed.
-- **Restart fan (reboots)**: for a fan the firmware has stopped driving. It restarts Windows (open programs
-  close, so save your work first). While the laptop boots, the firmware drives the fan at full power regardless
-  of its state, which can get a sticky fan turning again. When the app starts after the reboot (with **Start
-  with Windows**, or once by itself if that is off) it holds the fan at full speed for up to 40 seconds and
-  reports whether it kept turning. An earlier version used hibernate with a timed wake instead, but timed wake
-  from hibernate proved unreliable on the X230.
+- **Restart fan (hibernate)**: for a fan the firmware has stopped driving. It hibernates the laptop and powers
+  it back on by itself about 2 minutes later; open programs are kept. While the laptop starts up again, the
+  firmware drives the fan at full power regardless of its state, which can get a sticky fan turning again. The
+  app then holds the fan at full speed for up to 40 seconds and reports whether it kept turning.
 - **Kick-start fan (experimental)**: cuts the fan's power and restores it in several patterns (about a minute),
   watching the tachometer. On the X230 this was written for, it has **never** been seen to start a stalled fan:
   the EC appears to stop driving a fan it considers failed. It is kept for testing on other models.
@@ -161,8 +168,13 @@ Some fans have no working tachometer signal. Please report it in an issue togeth
 That is the firmware's hold (see *Why the firmware holds the CPU at minimum speed*). The app reports it but
 cannot lift it.
 
-**Emergency hibernate: the laptop is off and does not come back.**
-That is intended: press the power button. Let it cool first.
+**The laptop is off and does not come back after a hibernate.**
+It should power itself on within a few minutes. If it does not, press the power button, or with **Power On with
+AC Attach** enabled in the BIOS, unplug the charger and plug it back in.
+
+**The laptop switches itself off with no warning.**
+That is the firmware's heat protection (Windows logs "shut down due to a critical thermal event"), usually
+because the fan has stopped while the CPU is busy. Reduce the load, keep the vents clear, and fix the fan.
 
 **Another fan tool (e.g. TPFanControl) is running.**
 They can run side by side: both use the shared `Global\Access_EC` lock, so their commands never collide.
@@ -196,7 +208,7 @@ Source layout:
 | `src/PdhCounter.cs` | CPU clock and load via the Windows PDH API |
 | `src/FanController.cs` | Fan modes and the smart curve |
 | `src/FanKicker.cs` | The experimental fan kick-start sequence |
-| `src/PowerPlan.cs` | Hibernate, restart and last boot time |
+| `src/PowerPlan.cs` | Hibernate and the two wake-ups (timer and scheduled task) |
 | `src/Settings.cs` | Saved settings |
 | `assets/app.ico` | Multi-size app icon (16-256 px) embedded in the .exe |
 | `src/MainForm.cs` | Dashboard window, graph, tray icon, alerts, emergency hibernate and fan restart |

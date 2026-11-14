@@ -185,10 +185,12 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.2.2";
+        const string AppVersion = "1.2.3";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
+        const int RestartWakeSeconds = 120;    // Restart fan: power back on after 2 minutes
+        const int EmergencyWakeMinutes = 5;    // emergency hibernate: power back on after 5 minutes of cooling
         const string CsvHeader = "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,on_ac,battery_pct,charger_w,charger_limit_flag,thermal_flags,firmware_limit_reason";
 
         static readonly Choice[] FanModes =
@@ -218,7 +220,9 @@ namespace ThinkPadMonitor
         System.Threading.Timer timer;
         IntPtr trayIconHandle = IntPtr.Zero;
         int sampling;
-        bool loading = true, exiting, busy;
+        bool loading = true, exiting, busy, resumePending, fanCheckPending;
+        WakeTimer wakeTimer;
+        readonly System.Windows.Forms.Timer awakeTimer = new System.Windows.Forms.Timer { Interval = 180000 };
         bool wasSpinning = true, hotAlerted, lockAlerted;
         int criticalSecs, ticks, lockSecs;
         string lastTrigger;                    // most recent firmware limit condition seen, e.g. "charger power limit"
@@ -262,7 +266,7 @@ namespace ThinkPadMonitor
             // Row 3: actions
             int x = 12;
             x = StyleButton(bLight, "ThinkLight", x, 498) + 8;
-            x = StyleButton(bRestart, "Restart fan (reboots)", x, 498) + 8;
+            x = StyleButton(bRestart, "Restart fan (hibernate)", x, 498) + 8;
             x = StyleButton(bKick, "Kick-start fan (experimental)", x, 498) + 8;
             StyleButton(bLogs, "Open log folder", x, 498);
 
@@ -304,7 +308,8 @@ namespace ThinkPadMonitor
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ShowDashboard(); };
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
-            CheckPendingFanRestart();
+            awakeTimer.Tick += delegate { awakeTimer.Stop(); PowerPlan.KeepAwake(false); };
+            PowerPlan.RemoveWakeTask();          // leftover from a hibernate the app did not see the end of
 
             tray.DoubleClick += delegate { ShowDashboard(); };
             // Started from "Start with Windows": stay in the tray. SetVisibleCore keeps the window from ever being
@@ -386,7 +391,7 @@ namespace ThinkPadMonitor
                 fanMenu.DropDownItems.Add(cbFan.Items[i].ToString(), null, delegate { cbFan.SelectedIndex = index; });
             }
             menu.Items.Add(fanMenu);
-            menu.Items.Add("Restart fan (reboots)", null, delegate { ShowDashboard(); RestartFan(); });
+            menu.Items.Add("Restart fan (hibernate)", null, delegate { ShowDashboard(); RestartFan(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { exiting = true; Close(); });
             menu.Opening += delegate
@@ -539,22 +544,51 @@ namespace ThinkPadMonitor
             if (!s.EcOk || !Settings.EmergencyEnabled || s.CpuTemp < Settings.EmergencyTemp) { criticalSecs = 0; return; }
             if (++criticalSecs < 5) return;
             criticalSecs = 0;
-            tray.ShowBalloonTip(5000, "Emergency hibernate", "CPU stayed at " + s.CpuTemp + " °C. Hibernating now.", ToolTipIcon.Error);
+            if (GuardedHibernate(EmergencyWakeMinutes * 60, false))
+                tray.ShowBalloonTip(5000, "Emergency hibernate", "CPU stayed at " + s.CpuTemp + " °C. Hibernating to cool down; the laptop powers itself back on in about " +
+                    EmergencyWakeMinutes + " minutes.", ToolTipIcon.Error);
+            else
+                tray.ShowBalloonTip(10000, "CPU dangerously hot", "CPU stayed at " + s.CpuTemp + " °C, but no automatic power-on could be set, so the laptop was NOT hibernated. Save your work and reduce the load.", ToolTipIcon.Error);
+        }
+
+        // Hibernates only after a wake-up is armed, so the laptop always comes back by itself (its power button may
+        // not work). Two independent wake-ups: a waitable timer, and a one-time scheduled task allowed to wake the PC.
+        // Returns false, without hibernating, if neither could be armed.
+        bool GuardedHibernate(int wakeAfterSeconds, bool fanCheckAfterWake)
+        {
+            if (resumePending || !PowerPlan.HibernateAvailable) return false;
+            PowerPlan.EnableWakeTimers();
+            DateTime wakeAt = DateTime.Now.AddSeconds(wakeAfterSeconds);
+            CancelWake();
+            wakeTimer = new WakeTimer();
+            bool timerArmed = wakeTimer.Arm(wakeAt);
+            bool taskArmed = PowerPlan.ScheduleWakeTask(wakeAt);
+            if (!timerArmed && !taskArmed) { CancelWake(); return false; }
+            resumePending = true;
+            fanCheckPending = fanCheckAfterWake;
+            SetStatus("Hibernating... the laptop powers itself back on at about " + wakeAt.ToString("HH:mm") + ".");
             var th = new Thread(delegate()
             {
-                Thread.Sleep(1500);
+                Thread.Sleep(1500);                                  // let the notification show
                 int err = PowerPlan.Hibernate();
                 if (err == 0) return;
                 BeginInvoke(new Action(delegate
                 {
-                    SetStatus("Emergency hibernate failed: Windows refused (error " + err + "). Shut the laptop down now.");
-                    holdStatusUntil = DateTime.Now.AddSeconds(60);
-                    tray.ShowBalloonTip(10000, "Emergency hibernate failed",
-                        "Windows refused to hibernate (error " + err + "). Shut the laptop down now.", ToolTipIcon.Error);
+                    resumePending = fanCheckPending = false;
+                    CancelWake();
+                    SetStatus("Windows refused to hibernate (error " + err + "). Nothing was changed.");
+                    holdStatusUntil = DateTime.Now.AddSeconds(30);
                 }));
             });
             th.IsBackground = true;
             th.Start();
+            return true;
+        }
+
+        void CancelWake()
+        {
+            if (wakeTimer != null) { wakeTimer.Dispose(); wakeTimer = null; }
+            PowerPlan.RemoveWakeTask();
         }
 
         static string CsvField(string v)
@@ -633,62 +667,52 @@ namespace ThinkPadMonitor
 
         void KickFan() { RunFanJob(FanKicker.Run, "Fan kick"); }
 
-        // The firmware drives the fan blind while the machine boots, which can free a fan the EC has stopped driving.
-        // A normal Windows restart triggers that and always comes back by itself (timed wake from hibernate proved
-        // unreliable on the X230). The fan is checked once the app starts again after the reboot.
+        // The firmware drives the fan blind while the machine starts up, which can free a fan the EC has stopped
+        // driving. Hibernate keeps every program open; the armed wake-ups power the laptop back on by itself.
+        // Nothing is ever restarted.
         void RestartFan()
         {
-            if (busy) return;
+            if (busy || resumePending) return;
+            if (!PowerPlan.HibernateAvailable)
+            {
+                MessageBox.Show(this, "Hibernate is switched off on this PC, so the fan restart cannot run.\n\n" +
+                    "To enable it, run this in an administrator command prompt:\n    powercfg /hibernate on",
+                    "Restart fan", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             DialogResult answer = MessageBox.Show(this,
-                "This restarts Windows. Save your work first: open programs will close.\n\n" +
-                "While the laptop boots, its firmware runs the fan at full power, which can get a stuck fan turning again. " +
-                "When ThinkPad Monitor starts after the restart, it checks the fan and shows the result.\n\nRestart now?",
+                "This hibernates the laptop and powers it back on by itself about " + RestartWakeSeconds / 60 + " minutes later.\n\n" +
+                "Your open programs are kept: nothing is closed or restarted. While the laptop starts up again, its " +
+                "firmware runs the fan at full power, which can get a stuck fan turning again.\n\n" +
+                "If it ever stays off, unplug the charger and plug it back in: it powers on and continues where you were.\n\nHibernate now?",
                 "Restart fan", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes) return;
-
-            Settings.FanCheckAfter = DateTime.Now.Ticks;
-            Settings.Save();
-            if (!StartupEnabled()) ScheduleRunOnce();          // so the app runs once after the reboot to check the fan
-            SetStatus("Restarting Windows...");
-            if (PowerPlan.Restart()) return;
-            Settings.FanCheckAfter = 0;
-            Settings.Save();
-            SetStatus("Windows could not start the restart. Nothing was changed.");
-        }
-
-        static void ScheduleRunOnce()
-        {
-            try
-            {
-                using (RegistryKey k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\RunOnce"))
-                    k.SetValue(RunName, "\"" + Application.ExecutablePath + "\"");
-            }
-            catch (Exception) { }                            // the check then simply runs at the next manual start
-        }
-
-        // Runs the fan check if "Restart fan" was clicked before the most recent boot.
-        void CheckPendingFanRestart()
-        {
-            if (Settings.FanCheckAfter == 0) return;
-            DateTime clicked = new DateTime(Settings.FanCheckAfter);
-            if (PowerPlan.LastBoot < clicked) return;          // not rebooted yet (e.g. the restart was cancelled)
-            Settings.FanCheckAfter = 0;
-            Settings.Save();
-            if ((DateTime.Now - clicked).TotalHours > 1) return; // too long ago to be this restart's result
-            var t = new System.Windows.Forms.Timer { Interval = 5000 };
-            t.Tick += delegate { t.Stop(); t.Dispose(); ShowDashboard(); RunFanJob(CheckFanAfterRestart, "Fan restart"); };
-            t.Start();
+            if (!GuardedHibernate(RestartWakeSeconds, true))
+                SetStatus("No automatic power-on could be set, so the laptop was not hibernated. Nothing was changed.");
         }
 
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
-            if (e.Mode == PowerModes.Resume && !IsDisposed) BeginInvoke(new Action(delegate { criticalSecs = 0; }));
+            if (e.Mode != PowerModes.Resume || IsDisposed) return;
+            BeginInvoke(new Action(delegate
+            {
+                criticalSecs = 0;
+                if (!resumePending) return;
+                resumePending = false;
+                CancelWake();
+                PowerPlan.KeepAwake(true);           // a timer wake goes back to sleep unless told otherwise
+                awakeTimer.Start();
+                if (!fanCheckPending) return;
+                fanCheckPending = false;
+                ShowDashboard();
+                RunFanJob(CheckFanAfterRestart, "Fan restart");
+            }));
         }
 
-        // Gives the fan full drive for up to 40 s after the restart and reports whether it kept turning.
+        // Gives the fan full drive for up to 40 s after waking and reports whether it kept turning.
         static string CheckFanAfterRestart(Action<string> progress)
         {
-            progress("After the restart - checking the fan...");
+            progress("Back from hibernate - checking the fan...");
             try
             {
                 int streak = 0, rpm = 0;
@@ -703,7 +727,7 @@ namespace ThinkPadMonitor
                 }
                 if (Settings.FanMode == "none") EmbeddedController.Write(Ec.FAN_LEVEL, Ec.FAN_AUTO);
                 return streak >= 10 ? "Fan restarted: " + rpm + " rpm."
-                                    : "The fan did not keep turning after the restart. It likely needs oil or replacing.";
+                                    : "The fan did not keep turning after waking. It likely needs oil or replacing.";
             }
             catch (Exception ex) { return "Fan check failed: " + ex.Message; }
         }
@@ -775,6 +799,8 @@ namespace ThinkPadMonitor
                 return;
             }
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            if (!resumePending) CancelWake();
+            PowerPlan.KeepAwake(false);
             timer.Dispose();
             FanController.Suspended = true;
             FanController.Release(Settings.FanMode);   // never leave the fan pinned at a manual level after exit
