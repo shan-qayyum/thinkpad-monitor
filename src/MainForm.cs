@@ -185,12 +185,12 @@ namespace ThinkPadMonitor
     {
         [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr handle);
 
-        const string AppVersion = "1.2.3";
+        const string AppVersion = "1.2.4";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "ThinkPadMonitor";
         const int AlertTemp = 90;              // C, "CPU is hot" notification
-        const int RestartWakeSeconds = 120;    // Restart fan: power back on after 2 minutes
-        const int EmergencyWakeMinutes = 5;    // emergency hibernate: power back on after 5 minutes of cooling
+        // Every hibernate powers the laptop back on after this long (its power button may not work).
+        const int WakeAfterSeconds = 120;
         const string CsvHeader = "time,cpu_temp_c,fan_rpm,fan_register,cpu_mhz,cpu_load_pct,on_ac,battery_pct,charger_w,charger_limit_flag,thermal_flags,firmware_limit_reason";
 
         static readonly Choice[] FanModes =
@@ -544,9 +544,9 @@ namespace ThinkPadMonitor
             if (!s.EcOk || !Settings.EmergencyEnabled || s.CpuTemp < Settings.EmergencyTemp) { criticalSecs = 0; return; }
             if (++criticalSecs < 5) return;
             criticalSecs = 0;
-            if (GuardedHibernate(EmergencyWakeMinutes * 60, false))
+            if (GuardedHibernate(WakeAfterSeconds, false))
                 tray.ShowBalloonTip(5000, "Emergency hibernate", "CPU stayed at " + s.CpuTemp + " °C. Hibernating to cool down; the laptop powers itself back on in about " +
-                    EmergencyWakeMinutes + " minutes.", ToolTipIcon.Error);
+                    WakeAfterSeconds / 60 + " minutes.", ToolTipIcon.Error);
             else
                 tray.ShowBalloonTip(10000, "CPU dangerously hot", "CPU stayed at " + s.CpuTemp + " °C, but no automatic power-on could be set, so the laptop was NOT hibernated. Save your work and reduce the load.", ToolTipIcon.Error);
         }
@@ -681,13 +681,13 @@ namespace ThinkPadMonitor
                 return;
             }
             DialogResult answer = MessageBox.Show(this,
-                "This hibernates the laptop and powers it back on by itself about " + RestartWakeSeconds / 60 + " minutes later.\n\n" +
+                "This hibernates the laptop and powers it back on by itself about " + WakeAfterSeconds / 60 + " minutes later.\n\n" +
                 "Your open programs are kept: nothing is closed or restarted. While the laptop starts up again, its " +
                 "firmware runs the fan at full power, which can get a stuck fan turning again.\n\n" +
                 "If it ever stays off, unplug the charger and plug it back in: it powers on and continues where you were.\n\nHibernate now?",
                 "Restart fan", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes) return;
-            if (!GuardedHibernate(RestartWakeSeconds, true))
+            if (!GuardedHibernate(WakeAfterSeconds, true))
                 SetStatus("No automatic power-on could be set, so the laptop was not hibernated. Nothing was changed.");
         }
 

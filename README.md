@@ -84,12 +84,13 @@ firmware, so the fan is never left pinned at a manual level.
 ### Emergency hibernate
 If the CPU stays at or above the temperature you choose (80-104 °C) for 5 seconds, the laptop hibernates: open
 programs are saved to disk and the machine powers off before it can cook. **It powers itself back on about
-5 minutes later** and continues where you were. Off until you tick it.
+2 minutes later** and continues where you were. Off until you tick it.
 
 ### Hibernating always comes back by itself
 The app never restarts Windows, and it never hibernates without first arming **two independent wake-ups**: a
 wake timer, and a one-time scheduled task allowed to wake the computer (removed again after waking). If neither
-can be armed, it does not hibernate at all. Waking from hibernate can take a few minutes longer than set.
+can be armed, it does not hibernate at all. Every hibernate is set to wake after 2 minutes; on some machines the
+actual power-on can come a little later than set.
 
 If the laptop ever stays off (for example after the firmware's own heat cut-out), most ThinkPads can be powered
 on without the power button: with **Power On with AC Attach** enabled in the BIOS (Config > Power), unplug the
